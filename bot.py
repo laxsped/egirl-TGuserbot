@@ -65,7 +65,7 @@ def save_to_db(user_id, role, content):
     except Exception as e:
         print(f"Ошибка записи в БД: {e}")
 
-def get_history_from_db(user_id, limit=30):
+def get_history_from_db(user_id, limit=40):
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
@@ -109,13 +109,14 @@ async def presence_manager():
 
 async def get_ai_response(message, user_id, user_name):
     is_boyfriend = (user_id == BOYFRIEND_ID)
-    system_prompt = SYSTEM_PROMPT_BOYFRIEND if is_boyfriend else SYSTEM_PROMPT_OTHERS
+    # Немного подправили системный промпт для точности
+    system_prompt = SYSTEM_PROMPT_BOYFRIEND + "\nБУДЬ ВНИМАТЕЛЬНА: всегда проверяй историю переписки, не придумывай факты, которых не было. Если парень что-то купил или сделал — запоминай это." if is_boyfriend else SYSTEM_PROMPT_OTHERS
     
-    # Сохраняем входящее
+    # 1. Сохраняем входящее
     save_to_db(user_id, 'user', message)
     
-    # Достаем историю
-    history = get_history_from_db(user_id)
+    # 2. Достаем историю (УВЕЛИЧИЛИ ЛИМИТ ДО 40)
+    history = get_history_from_db(user_id, limit=40)
     
     try:
         response = requests.post(
@@ -124,7 +125,7 @@ async def get_ai_response(message, user_id, user_name):
             json={
                 'model': 'llama-3.3-70b-versatile',
                 'messages': [{'role': 'system', 'content': system_prompt}] + history,
-                'temperature': 0.9
+                'temperature': 0.7  # СДЕЛАЛИ ЕЁ ЧУТЬ СЕРЬЕЗНЕЕ К ФАКТАМ
             }
         )
         data = response.json()
@@ -133,7 +134,8 @@ async def get_ai_response(message, user_id, user_name):
         # Сохраняем ответ Сони
         save_to_db(user_id, 'assistant', result)
         return result
-    except:
+    except Exception as e:
+        print(f"Ошибка ИИ: {e}")
         return "сорян зависло"
 
 @client.on(events.NewMessage(incoming=True))
@@ -176,4 +178,5 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
+
 
