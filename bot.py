@@ -6,6 +6,8 @@ import os
 import base64
 import psycopg2
 from aiohttp import web
+from datetime import datetime
+import pytz
 
 # Твои данные
 api_id = 33125954
@@ -145,13 +147,19 @@ async def presence_manager():
 
 async def get_ai_response(message, user_id, user_name):
     is_boyfriend = (user_id == BOYFRIEND_ID)
-    # Немного подправили системный промпт для точности
-    system_prompt = SYSTEM_PROMPT_BOYFRIEND + "\nБУДЬ ВНИМАТЕЛЬНА: всегда проверяй историю переписки, не придумывай факты, которых не было. Если парень что-то купил или сделал — запоминай это." if is_boyfriend else SYSTEM_PROMPT_OTHERS
     
-    # 1. Сохраняем входящее
+    # Определяем время (МСК)
+    moscow_time = datetime.now(pytz.timezone('Europe/Moscow'))
+    current_time_str = moscow_time.strftime("%H:%M")
+    current_day = moscow_time.strftime("%A") # День недели на английском (можно перевести)
+
+    # Добавляем ПРЯМОЙ КОНТЕКСТ в системный промпт
+    time_context = f"\n\nТЕКУЩИЙ КОНТЕКСТ: Сейчас {current_time_str}, день недели - {current_day}. " \
+                   f"Учитывай время суток в ответах (ночь, утро, день)."
+
+    system_prompt = SYSTEM_PROMPT_BOYFRIEND + time_context if is_boyfriend else SYSTEM_PROMPT_OTHERS
+    
     save_to_db(user_id, 'user', message)
-    
-    # 2. Достаем историю (УВЕЛИЧИЛИ ЛИМИТ ДО 40)
     history = get_history_from_db(user_id, limit=40)
     
     try:
@@ -161,17 +169,15 @@ async def get_ai_response(message, user_id, user_name):
             json={
                 'model': 'llama-3.3-70b-versatile',
                 'messages': [{'role': 'system', 'content': system_prompt}] + history,
-                'temperature': 0.7  # СДЕЛАЛИ ЕЁ ЧУТЬ СЕРЬЕЗНЕЕ К ФАКТАМ
+                'temperature': 0.8
             }
         )
         data = response.json()
         result = data['choices'][0]['message']['content']
-        
-        # Сохраняем ответ Сони
         save_to_db(user_id, 'assistant', result)
         return result
     except Exception as e:
-        print(f"Ошибка ИИ: {e}")
+        print(f"Ошибка: {e}")
         return "сорян зависло"
 
 @client.on(events.NewMessage(incoming=True))
@@ -235,6 +241,7 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
+
 
 
 
