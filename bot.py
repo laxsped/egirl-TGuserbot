@@ -148,18 +148,19 @@ async def handler(event):
     
     print(f"Получено от {user_name} ({user_id}): {event.text}")
     
-    # Небольшая задержка перед началом (думает)
+    # 1. Небольшая пауза, типа она увидела уведомление
     await asyncio.sleep(random.uniform(1, 3))
     
-    # Получаем ответ от ИИ
+    # 2. ПОМЕЧАЕМ ПРОЧИТАННЫМ (добавляем эту строку!)
+    await client.send_read_acknowledge(event.chat_id, max_id=event.id)
+    print(f"Сообщение от {user_name} помечено как прочитанное")
+    
+    # Дальше твой обычный код...
     reply = await get_ai_response(event.text, user_id, user_name)
     
-    # Считаем время печати
     chars_per_second = random.uniform(2.5, 3.5)
     typing_time = len(reply) / chars_per_second
     typing_time = max(2, min(typing_time, 15))
-    
-    print(f"Печатаю {len(reply)} символов, ~{typing_time:.1f} сек")
     
     async with client.action(event.chat_id, 'typing'):
         await asyncio.sleep(typing_time)
@@ -194,3 +195,4 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
+
