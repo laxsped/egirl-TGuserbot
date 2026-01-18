@@ -3,12 +3,24 @@ import requests
 import asyncio
 import random
 import os
-os.environ['TZ'] = 'Europe/Moscow'  # Чтобы время правильно работало
+import base64
 
 api_id = 33125954
 api_hash = '42dd1070f641ea0060b39067c1e187e7'
 phone = '+79118682172'
-BOYFRIEND_ID = 5902478541  # <-- Тут меняй ID парня
+BOYFRIEND_ID = 5902478541
+
+# Восстанавливаем session из переменной окружения
+session_b64 = os.getenv('SESSION_DATA')
+if session_b64:
+    print("Восстанавливаю сессию из переменной окружения...")
+    try:
+        session_bytes = base64.b64decode(session_b64)
+        with open('girlfriend_session.session', 'wb') as f:
+            f.write(session_bytes)
+        print("Сессия восстановлена!")
+    except Exception as e:
+        print(f"Ошибка при восстановлении сессии: {e}")
 
 client = TelegramClient('girlfriend_session', api_id, api_hash)
 
