@@ -40,7 +40,7 @@ SYSTEM_PROMPT_OTHERS = """ты соня, девушка 16 лет. пишет н
 def init_db():
     conn = psycopg2.connect(DATABASE_URL)
     cur = conn.cursor()
-    cur.execute('''
+    cur.execute('''    
         CREATE TABLE IF NOT EXISTS messages (
             id SERIAL PRIMARY KEY,
             user_id BIGINT,
@@ -65,7 +65,7 @@ def save_to_db(user_id, role, content):
     except Exception as e:
         print(f"Ошибка записи в БД: {e}")
 
-def get_history_from_db(user_id, limit=15):
+def get_history_from_db(user_id, limit=30):
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
@@ -176,3 +176,4 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
+
