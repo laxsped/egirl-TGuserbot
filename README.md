@@ -1,2 +1,0 @@
-# telegram-girlfriend-bot
-egirl
