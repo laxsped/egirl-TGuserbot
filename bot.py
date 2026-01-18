@@ -166,12 +166,3 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
-```
-
----
-
-## Теперь обнови `requirements.txt`:
-```
-telethon
-requests
-aiohttp
