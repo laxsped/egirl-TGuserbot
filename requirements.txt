@@ -2,3 +2,4 @@ telethon
 requests
 aiohttp
 psycopg2-binary
+pytz
