@@ -68,22 +68,15 @@ conversations = {}
 # Функция для имитации онлайна/оффлайна
 async def presence_manager():
     while True:
-        # Случайное время в онлайне (от 2 до 10 минут)
         online_time = random.randint(120, 600)
-        # Случайная пауза между заходами (от 15 до 45 минут)
         offline_time = random.randint(900, 2700)
-        
         try:
-            # Заходим в онлайн
             await client(functions.account.UpdateStatusRequest(offline=False))
             print(f"--- Соня зашла в онлайн на {online_time//60} мин ---")
             await asyncio.sleep(online_time)
-            
-            # Уходим в оффлайн
             await client(functions.account.UpdateStatusRequest(offline=True))
             print(f"--- Соня вышла из сети на {offline_time//60} мин ---")
             await asyncio.sleep(offline_time)
-            
         except Exception as e:
             print(f"Ошибка в статусе: {e}")
             await asyncio.sleep(60)
@@ -91,7 +84,6 @@ async def presence_manager():
 async def get_ai_response(message, user_id, user_name):
     is_boyfriend = (user_id == BOYFRIEND_ID)
     system_prompt = SYSTEM_PROMPT_BOYFRIEND if is_boyfriend else SYSTEM_PROMPT_OTHERS
-    
     if user_id not in conversations:
         conversations[user_id] = []
     
@@ -101,11 +93,8 @@ async def get_ai_response(message, user_id, user_name):
         context_message = message
     
     conversations[user_id].append({'role': 'user', 'content': context_message})
-    
     if len(conversations[user_id]) > 10:
         conversations[user_id] = conversations[user_id][-10:]
-    
-    print(f"Отправляю в ИИ от {user_name} ({user_id}): {message}")
     
     try:
         response = requests.post(
@@ -113,25 +102,38 @@ async def get_ai_response(message, user_id, user_name):
             headers={'Authorization': f'Bearer {GROQ_API_KEY}'},
             json={
                 'model': 'llama-3.3-70b-versatile',
-                'messages': [
-                    {'role': 'system', 'content': system_prompt}
-                ] + conversations[user_id],
+                'messages': [{'role': 'system', 'content': system_prompt}] + conversations[user_id],
                 'temperature': 0.95
             }
         )
         data = response.json()
-        
         if 'choices' in data:
             result = data['choices'][0]['message']['content']
             conversations[user_id].append({'role': 'assistant', 'content': result})
-            print(f"ИИ ответил: {result}")
             return result
-        else:
-            print(f"Ошибка API: {data}")
-            return "сорян зависло"
-    except Exception as e:
-        print(f"Ошибка: {e}")
         return "сорян зависло"
+    except Exception:
+        return "сорян зависло"
+
+# Логика опечаток
+def make_typos(text):
+    if len(text) < 5 or random.random() > 0.25: # Опечатка в 25% случаев
+        return text
+    
+    text_list = list(text)
+    typo_type = random.randint(1, 3)
+    
+    if typo_type == 1: # Пропуск буквы
+        idx = random.randint(0, len(text_list) - 1)
+        text_list.pop(idx)
+    elif typo_type == 2: # Перестановка соседних букв
+        idx = random.randint(0, len(text_list) - 2)
+        text_list[idx], text_list[idx+1] = text_list[idx+1], text_list[idx]
+    elif typo_type == 3: # Повтор буквы
+        idx = random.randint(0, len(text_list) - 1)
+        text_list.insert(idx, text_list[idx])
+        
+    return "".join(text_list)
 
 @client.on(events.NewMessage(incoming=True))
 async def handler(event):
@@ -139,43 +141,37 @@ async def handler(event):
         return
     
     user_id = event.sender_id
-    
     try:
         sender = await event.get_sender()
         user_name = sender.first_name or "аноним"
     except:
         user_name = "аноним"
     
-    print(f"Получено от {user_name} ({user_id}): {event.text}")
-    
-    # 1. Небольшая пауза (имитируем, что увидела уведомление)
+    # 1. Задержка перед просмотром
     await asyncio.sleep(random.uniform(1, 3))
     
-    # 2. ПОМЕЧАЕМ ПРОЧИТАННЫМ
+    # 2. Читаем сообщение
     try:
         await client.send_read_acknowledge(event.chat_id, max_id=event.id)
-        print(f"Сообщение от {user_name} помечено как прочитанное")
-    except Exception as e:
-        print(f"Не удалось пометить прочитанным: {e}")
+    except:
+        pass
     
-    # 3. Получаем ответ от ИИ
+    # 3. Генерим ответ
     reply = await get_ai_response(event.text, user_id, user_name)
     
-    # 4. Считаем время печати
+    # 4. Добавляем опечатку
+    reply = make_typos(reply)
+    
+    # 5. Имитируем набор текста
     chars_per_second = random.uniform(2.5, 3.5)
-    typing_time = len(reply) / chars_per_second
-    typing_time = max(2, min(typing_time, 15))
+    typing_time = max(2, min(len(reply) / chars_per_second, 15))
     
-    print(f"Печатаю {len(reply)} символов, ~{typing_time:.1f} сек")
-    
-    # 5. Имитируем "печатает..."
     async with client.action(event.chat_id, 'typing'):
         await asyncio.sleep(typing_time)
     
     await event.respond(reply)
-    print("Отправлено!")
 
-# HTTP сервер для Render
+# Web сервер
 async def health_check(request):
     return web.Response(text="Bot is alive!")
 
@@ -188,16 +184,11 @@ async def start_web_server():
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', int(os.environ.get('PORT', 10000)))
     await site.start()
-    print("Web сервер запущен на порту", os.environ.get('PORT', 10000))
 
 async def main():
     await start_web_server()
     await client.start(phone)
-    print("Бот запущен!")
-    
-    # Запускаем фоновую задачу имитации онлайна
     asyncio.create_task(presence_manager())
-    
     await client.run_until_disconnected()
 
 if __name__ == '__main__':
