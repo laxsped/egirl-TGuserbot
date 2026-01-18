@@ -79,6 +79,42 @@ def get_history_from_db(user_id, limit=40):
         print(f"Ошибка чтения БД: {e}")
         return []
 
+async def thoughts_loop():
+    while True:
+        # Проверяем раз в 30-60 минут
+        await asyncio.sleep(random.randint(1800, 3600))
+        
+        # Шанс 20%, что она напишет первой, если в сети
+        if random.random() < 0.2:
+            history = get_history_from_db(BOYFRIEND_ID, limit=1)
+            # Если последнее сообщение было давно (например, больше 3 часов назад)
+            # Здесь можно усложнить логику, но для начала просто кинем фразу
+            prompt = "ты скучаешь по лёше, напиши ему что-то короткое сама первая"
+            try:
+                # Генерируем "инициативное" сообщение
+                response = requests.post(
+                    'https://api.groq.com/openai/v1/chat/completions',
+                    headers={'Authorization': f'Bearer {GROQ_API_KEY}'},
+                    json={
+                        'model': 'llama-3.3-70b-versatile',
+                        'messages': [
+                            {'role': 'system', 'content': SYSTEM_PROMPT_BOYFRIEND},
+                            {'role': 'user', 'content': prompt}
+                        ],
+                        'temperature': 0.8
+                    }
+                )
+                text = response.json()['choices'][0]['message']['content']
+                text = make_typos(text)
+                
+                async with client.action(BOYFRIEND_ID, 'typing'):
+                    await asyncio.sleep(random.randint(3, 7))
+                await client.send_message(BOYFRIEND_ID, text)
+                save_to_db(BOYFRIEND_ID, 'assistant', text)
+                print("Соня проявила инициативу!")
+            except:
+                pass
+
 # --- ЛОГИКА ОПЕЧАТОК ---
 def make_typos(text):
     if len(text) < 5 or random.random() > 0.25:
@@ -143,23 +179,39 @@ async def handler(event):
     if event.is_group or event.is_channel: return
     user_id = event.sender_id
     
-    # 1. Задержка "увидела уведомление"
-    await asyncio.sleep(random.uniform(1, 3))
+    # 1. Шанс на "игнор" (10%), если это не супер-важный вопрос
+    if random.random() < 0.1:
+        print("Соня решила проигнорить (ghosting)")
+        return
+
+    # 2. Рандомная задержка перед "прочтением" (от 5 сек до 2 мин)
+    # Будто она не сразу увидела телефон
+    await asyncio.sleep(random.randint(5, 60))
     
-    # 2. Прочитано
     try: await client.send_read_acknowledge(event.chat_id, max_id=event.id)
     except: pass
     
-    # 3. Ответ и опечатки
+    # 3. Генерим ответ
     reply = await get_ai_response(event.text, user_id, "")
-    reply = make_typos(reply)
     
-    # 4. Печатает...
-    typing_time = max(2, min(len(reply) / random.uniform(2.5, 3.5), 15))
-    async with client.action(event.chat_id, 'typing'):
-        await asyncio.sleep(typing_time)
-    
-    await event.respond(reply)
+    # Логика разделения сообщения (Double Messaging)
+    # Если ответ длиннее 30 символов, есть шанс 30%, что она пришлет его двумя кусками
+    messages_to_send = [reply]
+    if len(reply) > 30 and random.random() < 0.3:
+        parts = reply.split(' ', 1)
+        if len(parts) > 1:
+            messages_to_send = parts
+
+    for msg in messages_to_send:
+        msg = make_typos(msg)
+        # Печатает...
+        typing_time = max(2, min(len(msg) / random.uniform(2.5, 3.5), 10))
+        async with client.action(event.chat_id, 'typing'):
+            await asyncio.sleep(typing_time)
+        
+        await event.respond(msg)
+        # Небольшая пауза между сообщениями, если их два
+        await asyncio.sleep(random.uniform(1, 3))
 
 # Web сервер для Render
 async def health_check(request): return web.Response(text="Alive")
@@ -167,16 +219,22 @@ app = web.Application()
 app.router.add_get('/', health_check)
 
 async def main():
-    init_db() # Запуск базы
+    init_db()
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, '0.0.0.0', int(os.environ.get('PORT', 10000))).start()
     
     await client.start(phone)
+    
+    # Запускаем все фоновые процессы
     asyncio.create_task(presence_manager())
+    asyncio.create_task(thoughts_loop()) # Новая задача!
+    
+    print("Соня ожила и думает о тебе...")
     await client.run_until_disconnected()
 
 if __name__ == '__main__':
     asyncio.run(main())
+
 
 
