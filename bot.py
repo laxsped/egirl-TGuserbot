@@ -1,4 +1,4 @@
-from telethon import TelegramClient, events
+from telethon import TelegramClient, events, functions
 import requests
 import asyncio
 import random
@@ -6,10 +6,12 @@ import os
 import base64
 from aiohttp import web
 
+# Твои данные
 api_id = 33125954
 api_hash = '42dd1070f641ea0060b39067c1e187e7'
 phone = '+79118682172'
 BOYFRIEND_ID = 5902478541
+GROQ_API_KEY = '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'
 
 # Восстанавливаем session из переменной окружения
 session_b64 = os.getenv('SESSION_DATA')
@@ -63,6 +65,29 @@ SYSTEM_PROMPT_OTHERS = """ты соня, девушка 16 лет. пишет н
 
 conversations = {}
 
+# Функция для имитации онлайна/оффлайна
+async def presence_manager():
+    while True:
+        # Случайное время в онлайне (от 2 до 10 минут)
+        online_time = random.randint(120, 600)
+        # Случайная пауза между заходами (от 15 до 45 минут)
+        offline_time = random.randint(900, 2700)
+        
+        try:
+            # Заходим в онлайн
+            await client(functions.account.UpdateStatusRequest(offline=False))
+            print(f"--- Соня зашла в онлайн на {online_time//60} мин ---")
+            await asyncio.sleep(online_time)
+            
+            # Уходим в оффлайн
+            await client(functions.account.UpdateStatusRequest(offline=True))
+            print(f"--- Соня вышла из сети на {offline_time//60} мин ---")
+            await asyncio.sleep(offline_time)
+            
+        except Exception as e:
+            print(f"Ошибка в статусе: {e}")
+            await asyncio.sleep(60)
+
 async def get_ai_response(message, user_id, user_name):
     is_boyfriend = (user_id == BOYFRIEND_ID)
     system_prompt = SYSTEM_PROMPT_BOYFRIEND if is_boyfriend else SYSTEM_PROMPT_OTHERS
@@ -85,7 +110,7 @@ async def get_ai_response(message, user_id, user_name):
     try:
         response = requests.post(
             'https://api.groq.com/openai/v1/chat/completions',
-            headers={'Authorization': 'Bearer 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'},
+            headers={'Authorization': f'Bearer {GROQ_API_KEY}'},
             json={
                 'model': 'llama-3.3-70b-versatile',
                 'messages': [
@@ -129,21 +154,20 @@ async def handler(event):
     # Получаем ответ от ИИ
     reply = await get_ai_response(event.text, user_id, user_name)
     
-    # Считаем время печати в зависимости от длины
+    # Считаем время печати
     chars_per_second = random.uniform(2.5, 3.5)
     typing_time = len(reply) / chars_per_second
     typing_time = max(2, min(typing_time, 15))
     
     print(f"Печатаю {len(reply)} символов, ~{typing_time:.1f} сек")
     
-    # Показываем "печатает..." на рассчитанное время
     async with client.action(event.chat_id, 'typing'):
         await asyncio.sleep(typing_time)
     
     await event.respond(reply)
     print("Отправлено!")
 
-# HTTP сервер чтобы Render не усыплял
+# HTTP сервер для Render
 async def health_check(request):
     return web.Response(text="Bot is alive!")
 
@@ -162,6 +186,10 @@ async def main():
     await start_web_server()
     await client.start(phone)
     print("Бот запущен!")
+    
+    # Запускаем фоновую задачу имитации онлайна
+    asyncio.create_task(presence_manager())
+    
     await client.run_until_disconnected()
 
 if __name__ == '__main__':
