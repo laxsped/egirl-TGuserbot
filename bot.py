@@ -149,7 +149,7 @@ async def get_ai_response(message, user_id, user_name):
     is_boyfriend = (user_id == BOYFRIEND_ID)
     
     # Определяем время (МСК)
-    moscow_time = datetime.now(pytz.timezone('Europe/Moscow'))
+    moscow_time = datetime.now(pytz.timezone('Europe/Kaliningrad'))
     current_time_str = moscow_time.strftime("%H:%M")
     current_day = moscow_time.strftime("%A") # День недели на английском (можно перевести)
 
@@ -241,6 +241,7 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
+
 
 
 
