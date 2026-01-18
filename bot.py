@@ -4,6 +4,7 @@ import asyncio
 import random
 import os
 import base64
+from aiohttp import web
 
 api_id = 33125954
 api_hash = '42dd1070f641ea0060b39067c1e187e7'
@@ -129,11 +130,8 @@ async def handler(event):
     reply = await get_ai_response(event.text, user_id, user_name)
     
     # Считаем время печати в зависимости от длины
-    # ~150-200 символов в минуту (обычная скорость печати подростка)
-    chars_per_second = random.uniform(2.5, 3.5)  # 2.5-3.5 символа в секунду
+    chars_per_second = random.uniform(2.5, 3.5)
     typing_time = len(reply) / chars_per_second
-    
-    # Минимум 2 сек, максимум 15 сек (чтобы не слишком долго)
     typing_time = max(2, min(typing_time, 15))
     
     print(f"Печатаю {len(reply)} символов, ~{typing_time:.1f} сек")
@@ -145,6 +143,35 @@ async def handler(event):
     await event.respond(reply)
     print("Отправлено!")
 
-print("Бот запущен!")
-client.start(phone)
-client.run_until_disconnected()
+# HTTP сервер чтобы Render не усыплял
+async def health_check(request):
+    return web.Response(text="Bot is alive!")
+
+app = web.Application()
+app.router.add_get('/', health_check)
+app.router.add_get('/health', health_check)
+
+async def start_web_server():
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', int(os.environ.get('PORT', 10000)))
+    await site.start()
+    print("Web сервер запущен на порту", os.environ.get('PORT', 10000))
+
+async def main():
+    await start_web_server()
+    await client.start(phone)
+    print("Бот запущен!")
+    await client.run_until_disconnected()
+
+if __name__ == '__main__':
+    asyncio.run(main())
+```
+
+---
+
+## Теперь обнови `requirements.txt`:
+```
+telethon
+requests
+aiohttp
