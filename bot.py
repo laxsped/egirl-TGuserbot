@@ -6,10 +6,13 @@ import os
 import base64
 import psycopg2
 from aiohttp import web
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 
 is_online = False
+is_offended = False
+offended_until = None
+
 # Твои данные
 api_id = 33125954
 api_hash = '42dd1070f641ea0060b39067c1e187e7'
@@ -82,41 +85,68 @@ def get_history_from_db(user_id, limit=40):
         print(f"Ошибка чтения БД: {e}")
         return []
 
+def check_if_offensive(text):
+    """Проверка на обидные слова для режима ссоры"""
+    offensive_words = [
+        'дура', 'тупая', 'достала', 'заебала', 'отстань пж', 
+        'надоела', 'бесишь', 'идиотка', 'глупая', 'stupid'
+    ]
+    return any(word in text.lower() for word in offensive_words)
+
 async def thoughts_loop():
-    daily_messages_sent = 0  # Счётчик сообщений за день
+    daily_messages_sent = 0
     last_reset_day = datetime.now().day
     
     while True:
-        await asyncio.sleep(random.randint(1800, 3600))  # 30-60 мин
+        await asyncio.sleep(random.randint(1800, 3600))
         
-        # Сбрасываем счётчик в новый день
         current_day = datetime.now().day
         if current_day != last_reset_day:
             daily_messages_sent = 0
             last_reset_day = current_day
         
-        # Максимум 3 сообщения от неё первой в день
         if daily_messages_sent >= 3:
             continue
         
-        # Проверяем время (МСК)
         moscow_time = datetime.now(pytz.timezone('Europe/Kaliningrad'))
         hour = moscow_time.hour
         
-        # Пишет только с 8:00 до 23:00
         if not (8 <= hour <= 23):
             continue
         
-        # Шанс 20% написать
         if random.random() > 0.2:
             continue
         
-        # Проверяем когда было последнее сообщение
-        history = get_history_from_db(BOYFRIEND_ID, limit=1)
-        # Если история пустая или последнее сообщение давно
+        # НОВОЕ: Проверяем когда было последнее сообщение от тебя (ревность)
+        is_jealous = False
+        try:
+            conn = psycopg2.connect(DATABASE_URL)
+            cur = conn.cursor()
+            cur.execute('''
+                SELECT timestamp FROM messages 
+                WHERE user_id = %s AND role = 'user' 
+                ORDER BY timestamp DESC LIMIT 1
+            ''', (BOYFRIEND_ID,))
+            last_msg = cur.fetchone()
+            cur.close()
+            conn.close()
+            
+            if last_msg:
+                hours_since = (datetime.now() - last_msg[0]).total_seconds() / 3600
+                if hours_since > 6:
+                    is_jealous = True
+        except:
+            pass
         
-        # Генерим сообщение в зависимости от времени
-        if 8 <= hour < 11:
+        # Генерим сообщение
+        if is_jealous:
+            prompts = [
+                "напиши лёше что он куда-то пропал и ты беспокоишься",
+                "спроси где он был, немного обиженно",
+                "напиши что ты ждала его сообщения",
+                "спроси с кем он общался всё это время, немного ревнуя"
+            ]
+        elif 8 <= hour < 11:
             prompts = [
                 "напиши лёше доброе утро",
                 "спроси как он спал",
@@ -140,7 +170,7 @@ async def thoughts_loop():
                 "напиши что скучаешь",
                 "предложи погулять завтра"
             ]
-        else:  # 22-23
+        else:
             prompts = [
                 "напиши что собираешься спать",
                 "пожелай спокойной ночи",
@@ -165,14 +195,12 @@ async def thoughts_loop():
             text = response.json()['choices'][0]['message']['content']
             text = make_typos(text)
             
-            # Заходим в онлайн если офлайн
             global is_online
             if not is_online:
                 await client(functions.account.UpdateStatusRequest(offline=False))
                 is_online = True
                 await asyncio.sleep(random.randint(5, 15))
             
-            # Печатаем и отправляем
             async with client.action(BOYFRIEND_ID, 'typing'):
                 await asyncio.sleep(random.randint(3, 7))
             
@@ -183,8 +211,7 @@ async def thoughts_loop():
             
         except Exception as e:
             print(f"Ошибка инициативы: {e}")
-            
-# --- ЛОГИКА ОПЕЧАТОК ---
+
 def make_typos(text):
     if len(text) < 5 or random.random() > 0.25:
         return text
@@ -203,19 +230,15 @@ def make_typos(text):
 async def presence_manager():
     global is_online
     while True:
-        # Онлайн 2-10 минут
         online_time = random.randint(120, 600)
-        # Офлайн 15-45 минут
         offline_time = random.randint(900, 2700)
         
         try:
-            # Ставим онлайн
             await client(functions.account.UpdateStatusRequest(offline=False))
             is_online = True
             print(f"Соня онлайн на {online_time//60} мин")
             await asyncio.sleep(online_time)
             
-            # Ставим офлайн
             await client(functions.account.UpdateStatusRequest(offline=True))
             is_online = False
             print(f"Соня офлайн на {offline_time//60} мин")
@@ -224,16 +247,13 @@ async def presence_manager():
             print(f"Ошибка статуса: {e}")
             await asyncio.sleep(60)
 
-
 async def get_ai_response(message, user_id, user_name):
     is_boyfriend = (user_id == BOYFRIEND_ID)
     
-    # Определяем время (МСК)
     moscow_time = datetime.now(pytz.timezone('Europe/Kaliningrad'))
     current_time_str = moscow_time.strftime("%H:%M")
-    current_day = moscow_time.strftime("%A") # День недели на английском (можно перевести)
+    current_day = moscow_time.strftime("%A")
 
-    # Добавляем ПРЯМОЙ КОНТЕКСТ в системный промпт
     time_context = f"\n\nТЕКУЩИЙ КОНТЕКСТ: Сейчас {current_time_str}, день недели - {current_day}. " \
                    f"Учитывай время суток в ответах (ночь, утро, день)."
 
@@ -262,19 +282,61 @@ async def get_ai_response(message, user_id, user_name):
 
 @client.on(events.NewMessage(incoming=True))
 async def handler(event):
-    global is_online
+    global is_online, is_offended, offended_until
     
     if event.is_group or event.is_channel: 
         return
     
     user_id = event.sender_id
     
-    # 1. Шанс на игнор только если ОФЛАЙН
+    # НОВОЕ #20: Проверяем на обидные слова
+    if user_id == BOYFRIEND_ID and check_if_offensive(event.text):
+        is_offended = True
+        offended_until = datetime.now() + timedelta(hours=random.randint(2, 6))
+        print(f"Соня обиделась! До {offended_until.strftime('%H:%M')}")
+    
+    # НОВОЕ #20: Если обижена - отвечает сухо
+    if is_offended and user_id == BOYFRIEND_ID:
+        if datetime.now() < offended_until:
+            cold_responses = ["ок", "ладно", "хорошо", "не знаю", "как скажешь", "нормально"]
+            await asyncio.sleep(random.randint(60, 180))
+            await event.respond(random.choice(cold_responses))
+            print("Соня всё ещё обижена")
+            return
+        else:
+            # Помирилась
+            is_offended = False
+            makeup_msg = random.choice([
+                "ладно, не обижаюсь уже",
+                "прости что молчала",
+                "соскучилась"
+            ])
+            await asyncio.sleep(random.randint(10, 30))
+            await event.respond(makeup_msg)
+            print("Соня помирилась")
+            return
+    
+    # НОВОЕ #4: Режим "занята" (школа)
+    moscow_time = datetime.now(pytz.timezone('Europe/Kaliningrad'))
+    hour = moscow_time.hour
+    is_school_time = (9 <= hour < 15) and moscow_time.weekday() < 5
+    
+    if is_school_time and user_id == BOYFRIEND_ID and random.random() < 0.4:
+        busy_responses = [
+            "на уроке, потом отвечу",
+            "щас контрольная",
+            "не могу, на паре",
+            "потом напишу ок?"
+        ]
+        await asyncio.sleep(random.randint(30, 120))
+        await event.respond(random.choice(busy_responses))
+        print("Соня на уроках")
+        return
+    
     if not is_online and random.random() < 0.1:
         print("Соня офлайн, проигнорила")
         return
     
-    # 2. Задержка зависит от статуса
     if is_online:
         await asyncio.sleep(random.randint(5, 30))
     else:
@@ -283,21 +345,17 @@ async def handler(event):
         is_online = True
         await asyncio.sleep(random.randint(10, 40))
     
-    # 3. НОВОЕ: Иногда сначала ставит реакцию, потом отвечает
     if random.random() < 0.3 and user_id == BOYFRIEND_ID:
         await maybe_react_to_message(event, event.text)
-        await asyncio.sleep(random.uniform(2, 5))  # Потом думает что ответить
+        await asyncio.sleep(random.uniform(2, 5))
     
-    # 4. Прочитываем
     try: 
         await client.send_read_acknowledge(event.chat_id, max_id=event.id)
     except: 
         pass
     
-    # 5. Генерим ответ
     reply = await get_ai_response(event.text, user_id, "")
     
-    # 6. Double messaging
     messages_to_send = [reply]
     if len(reply) > 30 and random.random() < 0.3:
         parts = reply.split(' ', 1)
@@ -307,31 +365,38 @@ async def handler(event):
     last_message_id = None
     for msg in messages_to_send:
         msg = make_typos(msg)
+        
+        # НОВОЕ #13: Улучшенная печать с паузами
+        if random.random() < 0.15:
+            async with client.action(event.chat_id, 'typing'):
+                await asyncio.sleep(random.uniform(2, 4))
+            await asyncio.sleep(random.uniform(1, 3))
+        
         typing_time = max(2, min(len(msg) / random.uniform(2.5, 3.5), 10))
         
-        async with client.action(event.chat_id, 'typing'):
-            await asyncio.sleep(typing_time)
+        if random.random() < 0.1 and len(msg) > 20:
+            async with client.action(event.chat_id, 'typing'):
+                await asyncio.sleep(typing_time / 2)
+            await asyncio.sleep(random.uniform(1, 2))
+            async with client.action(event.chat_id, 'typing'):
+                await asyncio.sleep(typing_time / 2)
+        else:
+            async with client.action(event.chat_id, 'typing'):
+                await asyncio.sleep(typing_time)
         
         sent_msg = await event.respond(msg)
         last_message_id = sent_msg.id
         await asyncio.sleep(random.uniform(1, 3))
     
-    # 7. НОВОЕ: Иногда реагирует на своё последнее сообщение
     if last_message_id and user_id == BOYFRIEND_ID:
         asyncio.create_task(maybe_react_to_own_message(event.chat_id, last_message_id, reply))
 
-# --- ЛОГИКА РЕАКЦИЙ ---
 async def maybe_react_to_message(event, message_text):
-    """Соня иногда ставит реакции на твои сообщения"""
-    
-    # Шанс 40% поставить реакцию
     if random.random() > 0.4:
         return
     
-    # Определяем реакцию по содержанию сообщения
     text_lower = message_text.lower()
     
-    # Эмоциональные ключевые слова
     if any(word in text_lower for word in ['люблю', 'любишь', 'милая', 'красивая', 'скучаю']):
         reactions = ['❤️', '🥰', '😘', '💕']
     elif any(word in text_lower for word in ['ахах', 'хаха', 'лол', 'смешно', 'дурак', 'дурачок']):
@@ -343,30 +408,23 @@ async def maybe_react_to_message(event, message_text):
     elif any(word in text_lower for word in ['фото', 'селфи', 'выглядишь']):
         reactions = ['😍', '🔥', '😳']
     else:
-        # Обычные нейтральные реакции
         reactions = ['👍', '❤️', '😊', '🙂']
     
-    # Выбираем случайную реакцию
     reaction = random.choice(reactions)
     
     try:
-        await asyncio.sleep(random.uniform(1, 4))  # Небольшая задержка
+        await asyncio.sleep(random.uniform(1, 4))
         await client.send_reaction(event.chat_id, event.id, reaction)
         print(f"Соня поставила реакцию: {reaction}")
     except Exception as e:
         print(f"Ошибка реакции: {e}")
 
 async def maybe_react_to_own_message(chat_id, message_id, her_message_text):
-    """Соня иногда реагирует на СВОИ сообщения после твоей реакции"""
-    
-    # Шанс 25% отреагировать на своё сообщение
     if random.random() > 0.25:
         return
     
-    # Ждём 2-8 секунд (будто увидела что ты отреагировал)
     await asyncio.sleep(random.uniform(2, 8))
     
-    # Реагирует на своё сообщение
     reactions = ['😅', '🙈', '😳', '🥰', '❤️']
     reaction = random.choice(reactions)
     
@@ -375,52 +433,41 @@ async def maybe_react_to_own_message(chat_id, message_id, her_message_text):
         print(f"Соня отреагировала на своё сообщение: {reaction}")
     except Exception as e:
         print(f"Ошибка своей реакции: {e}")
-        
-# Web сервер для Render
+
 async def health_check(request): 
     return web.Response(text="Alive")
 
 app = web.Application()
 app.router.add_get('/', health_check)
 
-# --- ОТСЛЕЖИВАНИЕ РЕАКЦИЙ НА ЕЁ СООБЩЕНИЯ ---
-last_checked_messages = {}  # {message_id: last_reaction_count}
+last_checked_messages = {}
 
 async def check_reactions_loop():
-    """Периодически проверяем не поставил ли ты реакцию на её сообщения"""
     global last_checked_messages
     
     while True:
         try:
-            await asyncio.sleep(8)  # Проверяем каждые 8 секунд
+            await asyncio.sleep(8)
             
-            # Получаем последние 15 сообщений из диалога
             messages = await client.get_messages(BOYFRIEND_ID, limit=15)
             
             for msg in messages:
-                # Пропускаем если это не её сообщение (out=True значит она отправила)
                 if not msg.out:
                     continue
                 
-                # Если у сообщения есть реакции
                 if msg.reactions and msg.reactions.results:
-                    # Проверяем есть ли реакция с флагом chosen=True (это твоя реакция)
                     has_your_reaction = any(r.chosen for r in msg.reactions.results)
                     
                     if has_your_reaction:
-                        # Проверяем не обрабатывали ли мы уже это сообщение
                         if msg.id not in last_checked_messages:
                             print(f"Обнаружена твоя реакция на сообщение {msg.id}")
-                            # Помечаем как обработанное
                             last_checked_messages[msg.id] = True
-                            # Соня может отреагировать (25% шанс)
                             asyncio.create_task(maybe_react_to_own_message(
                                 BOYFRIEND_ID,
                                 msg.id,
                                 ""
                             ))
             
-            # Очищаем старые записи
             if len(last_checked_messages) > 50:
                 keys_to_remove = list(last_checked_messages.keys())[:-30]
                 for k in keys_to_remove:
@@ -438,14 +485,12 @@ async def main():
     
     await client.start(phone)
     
-    # Запускаем все фоновые процессы
     asyncio.create_task(presence_manager())
     asyncio.create_task(thoughts_loop())
-    asyncio.create_task(check_reactions_loop())  # Новый процесс!
+    asyncio.create_task(check_reactions_loop())
     
-    print("Соня ожила и думает о тебе...")
+    print("Соня ожила, думает о тебе и иногда ревнует... 💕😤")
     await client.run_until_disconnected()
 
 if __name__ == '__main__':
     asyncio.run(main())
-
