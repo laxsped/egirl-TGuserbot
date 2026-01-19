@@ -383,21 +383,52 @@ async def health_check(request):
 app = web.Application()
 app.router.add_get('/', health_check)
 
-# --- ОБРАБОТЧИК РЕАКЦИЙ НА ЕЁ СООБЩЕНИЯ ---
-@client.on(events.MessageReactions)
-async def on_reaction_update(event):
-    """Ловим когда ты ставишь реакцию на её сообщение"""
-    try:
-        # Проверяем что это диалог с тобой
-        if event.peer_id.user_id == BOYFRIEND_ID:
-            # Соня видит что ты отреагировал и может отреагировать сама на своё сообщение
-            asyncio.create_task(maybe_react_to_own_message(
-                event.peer_id.user_id,
-                event.msg_id,
-                ""
-            ))
-    except Exception as e:
-        print(f"Ошибка обработки реакции: {e}")
+# --- ОТСЛЕЖИВАНИЕ РЕАКЦИЙ НА ЕЁ СООБЩЕНИЯ ---
+last_checked_messages = {}  # {message_id: last_reaction_count}
+
+async def check_reactions_loop():
+    """Периодически проверяем не поставил ли ты реакцию на её сообщения"""
+    global last_checked_messages
+    
+    while True:
+        try:
+            await asyncio.sleep(10)  # Проверяем каждые 10 секунд
+            
+            # Получаем последние 20 сообщений из диалога
+            messages = await client.get_messages(BOYFRIEND_ID, limit=20)
+            
+            for msg in messages:
+                # Пропускаем если это не её сообщение
+                if not msg.out:
+                    continue
+                
+                # Если у сообщения есть реакции
+                if msg.reactions and msg.reactions.results:
+                    current_reactions = len(msg.reactions.results)
+                    
+                    # Проверяем увеличилось ли количество реакций
+                    if msg.id in last_checked_messages:
+                        if current_reactions > last_checked_messages[msg.id]:
+                            # Новая реакция от тебя! Соня может отреагировать
+                            print(f"Обнаружена новая реакция на сообщение {msg.id}")
+                            asyncio.create_task(maybe_react_to_own_message(
+                                BOYFRIEND_ID,
+                                msg.id,
+                                ""
+                            ))
+                    
+                    # Обновляем счётчик
+                    last_checked_messages[msg.id] = current_reactions
+            
+            # Очищаем старые записи (старше 100 сообщений)
+            if len(last_checked_messages) > 100:
+                # Оставляем только последние 50
+                keys_to_keep = list(last_checked_messages.keys())[-50:]
+                last_checked_messages = {k: last_checked_messages[k] for k in keys_to_keep}
+                
+        except Exception as e:
+            print(f"Ошибка проверки реакций: {e}")
+            await asyncio.sleep(30)
 
 async def main():
     init_db()
@@ -410,6 +441,7 @@ async def main():
     # Запускаем все фоновые процессы
     asyncio.create_task(presence_manager())
     asyncio.create_task(thoughts_loop())
+    asyncio.create_task(check_reactions_loop())  # Новый процесс!
     
     print("Соня ожила и думает о тебе...")
     await client.run_until_disconnected()
