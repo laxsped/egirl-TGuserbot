@@ -9,6 +9,7 @@ from aiohttp import web
 from datetime import datetime
 import pytz
 
+is_online = False
 # Твои данные
 api_id = 33125954
 api_hash = '42dd1070f641ea0060b39067c1e187e7'
@@ -82,41 +83,107 @@ def get_history_from_db(user_id, limit=40):
         return []
 
 async def thoughts_loop():
+    daily_messages_sent = 0  # Счётчик сообщений за день
+    last_reset_day = datetime.now().day
+    
     while True:
-        # Проверяем раз в 30-60 минут
-        await asyncio.sleep(random.randint(1800, 3600))
+        await asyncio.sleep(random.randint(1800, 3600))  # 30-60 мин
         
-        # Шанс 20%, что она напишет первой, если в сети
-        if random.random() < 0.2:
-            history = get_history_from_db(BOYFRIEND_ID, limit=1)
-            # Если последнее сообщение было давно (например, больше 3 часов назад)
-            # Здесь можно усложнить логику, но для начала просто кинем фразу
-            prompt = "ты скучаешь по лёше, напиши ему что-то короткое сама первая"
-            try:
-                # Генерируем "инициативное" сообщение
-                response = requests.post(
-                    'https://api.groq.com/openai/v1/chat/completions',
-                    headers={'Authorization': f'Bearer {GROQ_API_KEY}'},
-                    json={
-                        'model': 'llama-3.3-70b-versatile',
-                        'messages': [
-                            {'role': 'system', 'content': SYSTEM_PROMPT_BOYFRIEND},
-                            {'role': 'user', 'content': prompt}
-                        ],
-                        'temperature': 0.8
-                    }
-                )
-                text = response.json()['choices'][0]['message']['content']
-                text = make_typos(text)
-                
-                async with client.action(BOYFRIEND_ID, 'typing'):
-                    await asyncio.sleep(random.randint(3, 7))
-                await client.send_message(BOYFRIEND_ID, text)
-                save_to_db(BOYFRIEND_ID, 'assistant', text)
-                print("Соня проявила инициативу!")
-            except:
-                pass
-
+        # Сбрасываем счётчик в новый день
+        current_day = datetime.now().day
+        if current_day != last_reset_day:
+            daily_messages_sent = 0
+            last_reset_day = current_day
+        
+        # Максимум 3 сообщения от неё первой в день
+        if daily_messages_sent >= 3:
+            continue
+        
+        # Проверяем время (МСК)
+        moscow_time = datetime.now(pytz.timezone('Europe/Kaliningrad'))
+        hour = moscow_time.hour
+        
+        # Пишет только с 8:00 до 23:00
+        if not (8 <= hour <= 23):
+            continue
+        
+        # Шанс 20% написать
+        if random.random() > 0.2:
+            continue
+        
+        # Проверяем когда было последнее сообщение
+        history = get_history_from_db(BOYFRIEND_ID, limit=1)
+        # Если история пустая или последнее сообщение давно
+        
+        # Генерим сообщение в зависимости от времени
+        if 8 <= hour < 11:
+            prompts = [
+                "напиши лёше доброе утро",
+                "спроси как он спал",
+                "пожелай хорошего дня"
+            ]
+        elif 11 <= hour < 15:
+            prompts = [
+                "спроси что он делает",
+                "напиши что скучаешь",
+                "спроси пойдёт ли гулять"
+            ]
+        elif 15 <= hour < 18:
+            prompts = [
+                "напиши что вышла из школы наконец",
+                "спроси как у него дела",
+                "пожалуйся на учителей шутливо"
+            ]
+        elif 18 <= hour < 22:
+            prompts = [
+                "спроси чем он занят",
+                "напиши что скучаешь",
+                "предложи погулять завтра"
+            ]
+        else:  # 22-23
+            prompts = [
+                "напиши что собираешься спать",
+                "пожелай спокойной ночи",
+                "спроси не спит ли он ещё"
+            ]
+        
+        prompt = random.choice(prompts)
+        
+        try:
+            response = requests.post(
+                'https://api.groq.com/openai/v1/chat/completions',
+                headers={'Authorization': f'Bearer {GROQ_API_KEY}'},
+                json={
+                    'model': 'llama-3.3-70b-versatile',
+                    'messages': [
+                        {'role': 'system', 'content': SYSTEM_PROMPT_BOYFRIEND},
+                        {'role': 'user', 'content': prompt}
+                    ],
+                    'temperature': 0.9
+                }
+            )
+            text = response.json()['choices'][0]['message']['content']
+            text = make_typos(text)
+            
+            # Заходим в онлайн если офлайн
+            global is_online
+            if not is_online:
+                await client(functions.account.UpdateStatusRequest(offline=False))
+                is_online = True
+                await asyncio.sleep(random.randint(5, 15))
+            
+            # Печатаем и отправляем
+            async with client.action(BOYFRIEND_ID, 'typing'):
+                await asyncio.sleep(random.randint(3, 7))
+            
+            await client.send_message(BOYFRIEND_ID, text)
+            save_to_db(BOYFRIEND_ID, 'assistant', text)
+            daily_messages_sent += 1
+            print(f"Соня проявила инициативу ({daily_messages_sent}/3 за день): {text}")
+            
+        except Exception as e:
+            print(f"Ошибка инициативы: {e}")
+            
 # --- ЛОГИКА ОПЕЧАТОК ---
 def make_typos(text):
     if len(text) < 5 or random.random() > 0.25:
@@ -134,16 +201,29 @@ def make_typos(text):
     return "".join(text_list)
 
 async def presence_manager():
+    global is_online
     while True:
+        # Онлайн 2-10 минут
         online_time = random.randint(120, 600)
+        # Офлайн 15-45 минут
         offline_time = random.randint(900, 2700)
+        
         try:
+            # Ставим онлайн
             await client(functions.account.UpdateStatusRequest(offline=False))
+            is_online = True
+            print(f"Соня онлайн на {online_time//60} мин")
             await asyncio.sleep(online_time)
+            
+            # Ставим офлайн
             await client(functions.account.UpdateStatusRequest(offline=True))
+            is_online = False
+            print(f"Соня офлайн на {offline_time//60} мин")
             await asyncio.sleep(offline_time)
-        except:
+        except Exception as e:
+            print(f"Ошибка статуса: {e}")
             await asyncio.sleep(60)
+
 
 async def get_ai_response(message, user_id, user_name):
     is_boyfriend = (user_id == BOYFRIEND_ID)
@@ -182,43 +262,55 @@ async def get_ai_response(message, user_id, user_name):
 
 @client.on(events.NewMessage(incoming=True))
 async def handler(event):
-    if event.is_group or event.is_channel: return
+    global is_online
+    
+    if event.is_group or event.is_channel: 
+        return
+    
     user_id = event.sender_id
     
-    # 1. Шанс на "игнор" (10%), если это не супер-важный вопрос
-    if random.random() < 0.1:
-        print("Соня решила проигнорить (ghosting)")
+    # 1. Шанс на игнор только если ОФЛАЙН
+    if not is_online and random.random() < 0.1:
+        print("Соня офлайн, проигнорила")
         return
-
-    # 2. Рандомная задержка перед "прочтением" (от 5 сек до 2 мин)
-    # Будто она не сразу увидела телефон
-    await asyncio.sleep(random.randint(5, 60))
     
-    try: await client.send_read_acknowledge(event.chat_id, max_id=event.id)
-    except: pass
+    # 2. Задержка зависит от статуса
+    if is_online:
+        # Если онлайн — отвечает быстро (5-30 сек)
+        await asyncio.sleep(random.randint(5, 30))
+    else:
+        # Если офлайн — может долго не отвечать (5 мин - 2 часа)
+        # Но сначала заходит в онлайн
+        await asyncio.sleep(random.randint(300, 7200))
+        await client(functions.account.UpdateStatusRequest(offline=False))
+        is_online = True
+        await asyncio.sleep(random.randint(10, 40))  # Прочитала и печатает
     
-    # 3. Генерим ответ
+    # 3. Прочитываем
+    try: 
+        await client.send_read_acknowledge(event.chat_id, max_id=event.id)
+    except: 
+        pass
+    
+    # 4. Генерим ответ
     reply = await get_ai_response(event.text, user_id, "")
     
-    # Логика разделения сообщения (Double Messaging)
-    # Если ответ длиннее 30 символов, есть шанс 30%, что она пришлет его двумя кусками
+    # 5. Double messaging
     messages_to_send = [reply]
     if len(reply) > 30 and random.random() < 0.3:
         parts = reply.split(' ', 1)
         if len(parts) > 1:
             messages_to_send = parts
-
+    
     for msg in messages_to_send:
         msg = make_typos(msg)
-        # Печатает...
         typing_time = max(2, min(len(msg) / random.uniform(2.5, 3.5), 10))
+        
         async with client.action(event.chat_id, 'typing'):
             await asyncio.sleep(typing_time)
         
         await event.respond(msg)
-        # Небольшая пауза между сообщениями, если их два
         await asyncio.sleep(random.uniform(1, 3))
-
 # Web сервер для Render
 async def health_check(request): return web.Response(text="Alive")
 app = web.Application()
@@ -241,6 +333,7 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
+
 
 
 
