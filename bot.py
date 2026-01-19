@@ -8,6 +8,7 @@ import psycopg2
 from aiohttp import web
 from datetime import datetime, timedelta
 import pytz
+from groq import Groq
 
 # --- КОНФИГУРАЦИЯ ---
 is_online = False
@@ -20,6 +21,7 @@ phone = '+79118682172'
 BOYFRIEND_ID = 5902478541
 GROQ_API_KEY = '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'
 DATABASE_URL = os.getenv('DATABASE_URL')
+groq_client = Groq(api_key=GROQ_API_KEY)
 
 # Восстановление сессии
 session_b64 = os.getenv('SESSION_DATA')
@@ -114,56 +116,38 @@ def make_typos(text):
 
 # --- VISION (ЗРЕНИЕ) ---
 def get_vision_response(image_path, user_caption, user_id):
-    # Кодируем картинку
     with open(image_path, "rb") as image_file:
         base64_image = base64.b64encode(image_file.read()).decode('utf-8')
     
     is_boyfriend = (user_id == BOYFRIEND_ID)
-    
-    # Разные промпты для тебя и остальных
-    if is_boyfriend:
-        who_is_sender = "Твой парень Лёша"
-        tone = "в своём стиле (коротко, без заглавных, сленг, можно дерзко или мило, как девушка 16 лет)."
-    else:
-        who_is_sender = "Какой-то незнакомый чел"
-        tone = "холодно, с недоумением. Ты его не знаешь."
-
-    context_text = f"Подпись к фото: '{user_caption}'." if user_caption else "Фото без подписи."
+    tone = "в своём стиле (коротко, без заглавных, сленг, 16 лет)" if is_boyfriend else "холодно"
+    context = f"Подпись: {user_caption}" if user_caption else "Без подписи"
 
     try:
-        response = requests.post(
-            'https://api.groq.com/openai/v1/chat/completions',
-            headers={'Authorization': f'Bearer {GROQ_API_KEY}'},
-            json={
-                'model': 'llama-3.2-11b-vision-preview', 
-                'messages': [
-                    {
-                        'role': 'user',
-                        'content': [
-                            {
-                                'type': 'text', 
-                                'text': f"Ты Соня. {who_is_sender} скинул тебе это фото. "
-                                        f"Отреагируй на него {tone} "
-                                        f"{context_text} НЕ описывай фото как робот (не пиши 'на изображении...'), "
-                                        f"просто выдай эмоциональную реакцию или коммент."
+        # Используем актуальную модель Llama 4 Vision
+        completion = groq_client.chat.completions.create(
+            model="meta-llama/llama-4-vision-preview", # Проверь точное имя в доках!
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": f"Ты Соня. Отреагируй на фото {tone}. {context}. Не будь роботом!"},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_image}",
                             },
-                            {
-                                'type': 'image_url',
-                                'image_url': {
-                                    'url': f"data:image/jpeg;base64,{base64_image}"
-                                }
-                            }
-                        ]
-                    }
-                ],
-                'temperature': 1.0,
-                'max_tokens': 150
-            }
+                        },
+                    ],
+                }
+            ],
+            temperature=1,
+            max_tokens=150,
         )
-        return response.json()['choices'][0]['message']['content'].lower()
+        return completion.choices[0].message.content.lower().replace('.', '')
     except Exception as e:
-        print(f"Ошибка зрения: {e}")
-        return "блин, инет лагает, не грузит картинку"
+        print(f"Ошибка Vision Llama 4: {e}")
+        return "блин, чет картинка не грузится"
 
 # --- AI RESPONSE (TEXT) ---
 async def get_ai_response(message, user_id):
@@ -469,3 +453,4 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
+
