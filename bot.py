@@ -43,11 +43,12 @@ SYSTEM_PROMPT_BOYFRIEND = """ты соня, девушка 16 лет. переп
 SYSTEM_PROMPT_OTHERS = """ты соня, девушка 16 лет. пишет незнакомец. ты осторожная. 
 стиль: коротко, без заглавных. если лезут — "отстань", "ты кто вообще"."""
 
-# --- БАЗА ДАННЫХ ---
+# --- БАЗА ДАННЫХ (Postgres) ---
 def init_db():
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
+        # Добавил индекс, чтобы история грузилась мгновенно
         cur.execute('''    
             CREATE TABLE IF NOT EXISTS messages (
                 id SERIAL PRIMARY KEY,
@@ -55,7 +56,8 @@ def init_db():
                 role TEXT,
                 content TEXT,
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
+            );
+            CREATE INDEX IF NOT EXISTS idx_user_id ON messages(user_id);
         ''')
         conn.commit()
         cur.close()
@@ -113,17 +115,12 @@ def make_typos(text):
         text_list.insert(idx, text_list[idx])
     return "".join(text_list)
 
-# --- VISION (ЗРЕНИЕ) ---
+# --- VISION (ЗРЕНИЕ СОНИ) ---
 def get_vision_response(image_path, user_caption, user_id):
-    # Кодируем картинку в base64
     with open(image_path, "rb") as image_file:
         base64_image = base64.b64encode(image_file.read()).decode('utf-8')
     
-    is_boyfriend = (user_id == BOYFRIEND_ID)
-    tone = "в своём стиле (коротко, без заглавных, сленг, как девчонка 16 лет)" if is_boyfriend else "холодно и с недоумением"
-
     try:
-        # Используем Maverick, раз он в списке Vision
         completion = groq_client.chat.completions.create(
             model="meta-llama/llama-4-maverick-17b-128e-instruct",
             messages=[
@@ -132,67 +129,57 @@ def get_vision_response(image_path, user_caption, user_id):
                     "content": [
                         {
                             "type": "text", 
-                            "text": f"Ты Соня. Отреагируй на фото {tone}. Подпись: '{user_caption}'. Не описывай фото, просто дай живую реакцию."
+                            "text": "Ты Соня, тебе 16. Ответь на фото коротко и в своем стиле. "
+                                    "ОБЯЗАТЕЛЬНО: В конце ответа добавь строку [MEMORY: краткое описание что на фото]."
                         },
                         {
                             "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{base64_image}"
-                            }
+                            "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
                         }
                     ]
                 }
             ],
-            temperature=1,
-            max_tokens=150
+            temperature=0.7
         )
-        
-        # Убираем точки и переводим в нижний регистр для стиля Сони
-        result = completion.choices[0].message.content.lower().replace('.', '')
-        return result
-
+        return completion.choices[0].message.content
     except Exception as e:
         print(f"Ошибка Vision: {e}")
-        return "блин, чет картинка не грузится, бесит"
+        return "блин, чет картинка не грузится [MEMORY: ошибка загрузки]"
 
 # --- AI RESPONSE (TEXT) ---
 async def get_ai_response(message, user_id):
     is_boyfriend = (user_id == BOYFRIEND_ID)
     
-    # Стиль Сони
+    # Твой стиль Сони
     SONYA_STYLE = (
         "Ты Соня, тебе 16. Твой стиль: ПОЛНЫЙ ИГНОР ЗАГЛАВНЫХ БУКВ И ТОЧЕК В КОНЦЕ. "
-        "Пиши как реальная девчонка в телеге: коротко, сленгом, иногда с кучей лишних букв (нееет, блиннн). "
-        "ЗАПРЕТ: Не используй время и цифры в ответах, если тебя об этом не спросили прямо. "
-        "ЗАПРЕТ: Не ставь больше одного смайлика. "
-        "Если Лёша бесит — отвечай дерзко. Если скучаешь — мило, но по-детски."
+        "Пиши как реальная девчонка в телеге: коротко, сленгом, иногда с кучей лишних букв. "
+        "ЗАПРЕТ: Не используй время и цифры, не ставь больше одного смайлика. "
+        "Если Лёша бесит — отвечай дерзко. Если скучаешь — мило."
     )
     
     system_prompt = SONYA_STYLE if is_boyfriend else SYSTEM_PROMPT_OTHERS
     
-    # Сохраняем сообщение юзера
     save_to_db(user_id, 'user', message)
     history = get_history_from_db(user_id, limit=40)
     
     try:
-        response = requests.post(
-            'https://api.groq.com/openai/v1/chat/completions',
-            headers={'Authorization': f'Bearer {GROQ_API_KEY}'},
-            json={
-                'model': 'llama-3.3-70b-versatile',
-                'messages': [{'role': 'system', 'content': system_prompt}] + history,
-                'temperature': 1.0,
-                'presence_penalty': 0.6
-            }
+        # Используем Maverick для обычного чата
+        completion = groq_client.chat.completions.create(
+            model="meta-llama/llama-4-maverick-17b-128e-instruct",
+            messages=[{'role': 'system', 'content': system_prompt}] + history,
+            temperature=1.0,
+            presence_penalty=0.6
         )
-        result = response.json()['choices'][0]['message']['content'].lower().replace('.', '')
+        
+        result = completion.choices[0].message.content.lower().replace('.', '').strip()
         save_to_db(user_id, 'assistant', result)
         return result
     except Exception as e:
-        print(f"Ошибка AI: {e}")
-        return "блин зависла"
+        print(f"Ошибка AI (Maverick Text): {e}")
+        return "блин зависла чето"
 
-# --- BACKGROUND TASKS ---
+# --- BACKGROUND TASKS (Инициатива Сони) ---
 async def thoughts_loop():
     daily_messages_sent = 0
     last_reset_day = datetime.now().day
@@ -216,59 +203,44 @@ async def thoughts_loop():
         
         if random.random() > 0.2:
             continue
-        
-        # Ревность
+
+        # Ревность (логика БД остается та же)
         is_jealous = False
         try:
             conn = psycopg2.connect(DATABASE_URL)
             cur = conn.cursor()
-            cur.execute('''
-                SELECT timestamp FROM messages 
-                WHERE user_id = %s AND role = 'user' 
-                ORDER BY timestamp DESC LIMIT 1
-            ''', (BOYFRIEND_ID,))
+            cur.execute('SELECT timestamp FROM messages WHERE user_id = %s AND role = \'user\' ORDER BY timestamp DESC LIMIT 1', (BOYFRIEND_ID,))
             last_msg = cur.fetchone()
             cur.close()
             conn.close()
-            
             if last_msg:
                 hours_since = (datetime.now() - last_msg[0]).total_seconds() / 3600
-                if hours_since > 6:
-                    is_jealous = True
+                if hours_since > 6: is_jealous = True
         except: pass
         
-        # Промпты для инициативы
+        # Выбор промпта
         if is_jealous:
-            prompts = ["напиши лёше что он куда-то пропал и ты беспокоишься", "спроси где он был, немного обиженно", "напиши что ты ждала его сообщения"]
-        elif 8 <= hour < 11:
-            prompts = ["напиши лёше доброе утро", "спроси как он спал"]
-        elif 11 <= hour < 15:
-            prompts = ["спроси что он делает", "напиши что скучаешь"]
-        elif 15 <= hour < 18:
-            prompts = ["напиши что вышла из школы наконец", "спроси как у него дела"]
-        elif 18 <= hour < 22:
-            prompts = ["спроси чем он занят", "напиши что скучаешь"]
-        else:
-            prompts = ["напиши что собираешься спать", "пожелай спокойной ночи"]
+            prompts = ["напиши лёше что он куда-то пропал и ты беспокоишься", "спроси где он был, немного обиженно"]
+        elif 8 <= hour < 11: prompts = ["напиши лёше доброе утро", "спроси как он спал"]
+        elif 18 <= hour < 22: prompts = ["спроси чем он занят", "напиши что скучаешь"]
+        else: prompts = ["спроси что он делает", "напиши что скучаешь"]
         
         prompt = random.choice(prompts)
         
         try:
-            response = requests.post(
-                'https://api.groq.com/openai/v1/chat/completions',
-                headers={'Authorization': f'Bearer {GROQ_API_KEY}'},
-                json={
-                    'model': 'llama-3.3-70b-versatile',
-                    'messages': [
-                        {'role': 'system', 'content': SYSTEM_PROMPT_BOYFRIEND},
-                        {'role': 'user', 'content': prompt}
-                    ],
-                    'temperature': 1.1
-                }
+            # Тут тоже Maverick!
+            response = groq_client.chat.completions.create(
+                model="meta-llama/llama-4-maverick-17b-128e-instruct",
+                messages=[
+                    {'role': 'system', 'content': SYSTEM_PROMPT_BOYFRIEND},
+                    {'role': 'user', 'content': prompt}
+                ],
+                temperature=1.1
             )
-            text = response.json()['choices'][0]['message']['content']
-            text = make_typos(text)
+            text = response.choices[0].message.content
+            text = make_typos(text.lower().replace('.', ''))
             
+            # Статус и отправка
             global is_online
             if not is_online:
                 await client(functions.account.UpdateStatusRequest(offline=False))
@@ -281,7 +253,7 @@ async def thoughts_loop():
             await client.send_message(BOYFRIEND_ID, text)
             save_to_db(BOYFRIEND_ID, 'assistant', text)
             daily_messages_sent += 1
-            print(f"Соня инициатива: {text}")
+            print(f"Соня сама написала: {text}")
             
         except Exception as e:
             print(f"Ошибка инициативы: {e}")
@@ -350,42 +322,33 @@ async def handler(event):
     user_id = event.sender_id
     text = event.text if event.text else ""
 
-    # === БЛОК 1: ФОТО (VISION) ===
+    # === БЛОК ФОТО ===
     if event.photo:
-        if not is_online:
-            await asyncio.sleep(random.randint(5, 10))
-            try: await client(functions.account.UpdateStatusRequest(offline=False))
-            except: pass
-            is_online = True
-            
         await client.send_read_acknowledge(event.chat_id, max_id=event.id)
-        
-        # Имитируем "разглядывание" фото
-        await asyncio.sleep(random.randint(3, 7)) 
-        
-        print("Пришло фото! Скачиваю...")
         photo_path = await event.download_media()
         
         async with client.action(event.chat_id, 'typing'):
-            # 1. Генерируем ответ ОДИН раз
-            raw_reply = get_vision_response(photo_path, text, user_id)
+            # Вызываем зрение ОДИН раз
+            raw_res = get_vision_response(photo_path, text, user_id)
             
-            # 2. Сохраняем "контекст увиденного" в базу ПЕРЕД тем как портить текст опечатками
-            # Это поможет Соне помнить, что реально было на картинке
-            vision_memory = f"[на фото было: {raw_reply}]"
-            save_to_db(user_id, 'assistant', vision_memory)
+            # Разделяем ответ и память
+            if "[MEMORY:" in raw_res:
+                reply_to_user, memory = raw_res.split("[MEMORY:", 1)
+                memory = "[память о фото: " + memory.strip()
+            else:
+                reply_to_user = raw_res
+                memory = f"[видела фото, подпись: {text}]"
+
+            # Сохраняем в Postgres именно описание!
+            save_to_db(user_id, 'assistant', memory)
             
-            # 3. Делаем текст "живым" (опечатки и т.д.)
-            final_reply = make_typos(raw_reply)
+            final_text = make_typos(reply_to_user.lower().replace('.', '').strip())
             
-            # Удаляем фото сразу после обработки, чтобы не висело
             if os.path.exists(photo_path):
                 os.remove(photo_path)
-                
-            await asyncio.sleep(random.randint(2, 5)) # Имитируем печать
             
-        # 4. Отправляем ответ
-        await event.respond(final_reply)
+            await asyncio.sleep(random.randint(3, 6))
+            await event.respond(final_text)
         return
     # ==============================
 
@@ -470,6 +433,3 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
-
-
-
