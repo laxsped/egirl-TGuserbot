@@ -189,7 +189,7 @@ async def thoughts_loop():
                         {'role': 'system', 'content': SYSTEM_PROMPT_BOYFRIEND},
                         {'role': 'user', 'content': prompt}
                     ],
-                    'temperature': 0.9
+                    'temperature': 1.1
                 }
             )
             text = response.json()['choices'][0]['message']['content']
@@ -265,7 +265,7 @@ async def get_ai_response(message, user_id, user_name):
 
     time_context = f"\n(Для справки: сейчас {current_time_str}, но не упоминай это просто так)."
 
-    system_prompt = SONYA_STYLE + time_context if is_boyfriend else SYSTEM_PROMPT_OTHERS
+    system_prompt = SONYA_STYLE if is_boyfriend else SYSTEM_PROMPT_OTHERS
     
     save_to_db(user_id, 'user', message)
     history = get_history_from_db(user_id, limit=40)
@@ -306,12 +306,11 @@ async def handler(event):
     
     # НОВОЕ #20: Если обижена - отвечает сухо
     if is_offended and user_id == BOYFRIEND_ID:
-        if datetime.now() < offended_until:
-            cold_responses = ["ок", "ладно", "хорошо", "не знаю", "как скажешь", "нормально"]
-            await asyncio.sleep(random.randint(60, 180))
-            await event.respond(random.choice(cold_responses))
-            print("Соня всё ещё обижена")
-            return
+    if datetime.now() < offended_until:
+        cold_responses = ["отвали", "бесишь", "пфф", "ой всё", "мда"] # Более живые ответы
+        await asyncio.sleep(random.randint(2, 10)) # Не заставляй себя ждать по 3 минуты!
+        await event.respond(random.choice(cold_responses))
+        return
         else:
             # Помирилась
             is_offended = False
@@ -347,11 +346,11 @@ async def handler(event):
         return
     
     if is_online:
-        await asyncio.sleep(random.randint(5, 30))
-    else:
-        await asyncio.sleep(random.randint(300, 7200))
-        await client(functions.account.UpdateStatusRequest(offline=False))
-        is_online = True
+    await asyncio.sleep(random.randint(1, 5)) # Читает почти сразу
+else:
+    await asyncio.sleep(random.randint(10, 30)) # Заходит в сеть за полминуты
+    await client(functions.account.UpdateStatusRequest(offline=False))
+    is_online = True
         await asyncio.sleep(random.randint(10, 40))
     
     if random.random() < 0.3 and user_id == BOYFRIEND_ID:
@@ -503,4 +502,5 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
+
 
