@@ -276,32 +276,35 @@ async def handler(event):
     
     # 2. Задержка зависит от статуса
     if is_online:
-        # Если онлайн — отвечает быстро (5-30 сек)
         await asyncio.sleep(random.randint(5, 30))
     else:
-        # Если офлайн — может долго не отвечать (5 мин - 2 часа)
-        # Но сначала заходит в онлайн
         await asyncio.sleep(random.randint(300, 7200))
         await client(functions.account.UpdateStatusRequest(offline=False))
         is_online = True
-        await asyncio.sleep(random.randint(10, 40))  # Прочитала и печатает
+        await asyncio.sleep(random.randint(10, 40))
     
-    # 3. Прочитываем
+    # 3. НОВОЕ: Иногда сначала ставит реакцию, потом отвечает
+    if random.random() < 0.3 and user_id == BOYFRIEND_ID:
+        await maybe_react_to_message(event, event.text)
+        await asyncio.sleep(random.uniform(2, 5))  # Потом думает что ответить
+    
+    # 4. Прочитываем
     try: 
         await client.send_read_acknowledge(event.chat_id, max_id=event.id)
     except: 
         pass
     
-    # 4. Генерим ответ
+    # 5. Генерим ответ
     reply = await get_ai_response(event.text, user_id, "")
     
-    # 5. Double messaging
+    # 6. Double messaging
     messages_to_send = [reply]
     if len(reply) > 30 and random.random() < 0.3:
         parts = reply.split(' ', 1)
         if len(parts) > 1:
             messages_to_send = parts
     
+    last_message_id = None
     for msg in messages_to_send:
         msg = make_typos(msg)
         typing_time = max(2, min(len(msg) / random.uniform(2.5, 3.5), 10))
@@ -309,12 +312,92 @@ async def handler(event):
         async with client.action(event.chat_id, 'typing'):
             await asyncio.sleep(typing_time)
         
-        await event.respond(msg)
+        sent_msg = await event.respond(msg)
+        last_message_id = sent_msg.id
         await asyncio.sleep(random.uniform(1, 3))
+    
+    # 7. НОВОЕ: Иногда реагирует на своё последнее сообщение
+    if last_message_id and user_id == BOYFRIEND_ID:
+        asyncio.create_task(maybe_react_to_own_message(event.chat_id, last_message_id, reply))
+
+# --- ЛОГИКА РЕАКЦИЙ ---
+async def maybe_react_to_message(event, message_text):
+    """Соня иногда ставит реакции на твои сообщения"""
+    
+    # Шанс 40% поставить реакцию
+    if random.random() > 0.4:
+        return
+    
+    # Определяем реакцию по содержанию сообщения
+    text_lower = message_text.lower()
+    
+    # Эмоциональные ключевые слова
+    if any(word in text_lower for word in ['люблю', 'любишь', 'милая', 'красивая', 'скучаю']):
+        reactions = ['❤️', '🥰', '😘', '💕']
+    elif any(word in text_lower for word in ['ахах', 'хаха', 'лол', 'смешно', 'дурак', 'дурачок']):
+        reactions = ['😂', '🤣', '😄']
+    elif any(word in text_lower for word in ['грустно', 'плохо', 'устал', 'болею']):
+        reactions = ['😢', '🥺', '😭']
+    elif any(word in text_lower for word in ['пойдем', 'погуляем', 'встретимся', 'увидимся']):
+        reactions = ['🥰', '😊', '🤗']
+    elif any(word in text_lower for word in ['фото', 'селфи', 'выглядишь']):
+        reactions = ['😍', '🔥', '😳']
+    else:
+        # Обычные нейтральные реакции
+        reactions = ['👍', '❤️', '😊', '🙂']
+    
+    # Выбираем случайную реакцию
+    reaction = random.choice(reactions)
+    
+    try:
+        await asyncio.sleep(random.uniform(1, 4))  # Небольшая задержка
+        await client.send_reaction(event.chat_id, event.id, reaction)
+        print(f"Соня поставила реакцию: {reaction}")
+    except Exception as e:
+        print(f"Ошибка реакции: {e}")
+
+async def maybe_react_to_own_message(chat_id, message_id, her_message_text):
+    """Соня иногда реагирует на СВОИ сообщения после твоей реакции"""
+    
+    # Шанс 25% отреагировать на своё сообщение
+    if random.random() > 0.25:
+        return
+    
+    # Ждём 2-8 секунд (будто увидела что ты отреагировал)
+    await asyncio.sleep(random.uniform(2, 8))
+    
+    # Реагирует на своё сообщение
+    reactions = ['😅', '🙈', '😳', '🥰', '❤️']
+    reaction = random.choice(reactions)
+    
+    try:
+        await client.send_reaction(chat_id, message_id, reaction)
+        print(f"Соня отреагировала на своё сообщение: {reaction}")
+    except Exception as e:
+        print(f"Ошибка своей реакции: {e}")
+        
 # Web сервер для Render
-async def health_check(request): return web.Response(text="Alive")
+async def health_check(request): 
+    return web.Response(text="Alive")
+
 app = web.Application()
 app.router.add_get('/', health_check)
+
+# --- ОБРАБОТЧИК РЕАКЦИЙ НА ЕЁ СООБЩЕНИЯ ---
+@client.on(events.MessageReactions)
+async def on_reaction_update(event):
+    """Ловим когда ты ставишь реакцию на её сообщение"""
+    try:
+        # Проверяем что это диалог с тобой
+        if event.peer_id.user_id == BOYFRIEND_ID:
+            # Соня видит что ты отреагировал и может отреагировать сама на своё сообщение
+            asyncio.create_task(maybe_react_to_own_message(
+                event.peer_id.user_id,
+                event.msg_id,
+                ""
+            ))
+    except Exception as e:
+        print(f"Ошибка обработки реакции: {e}")
 
 async def main():
     init_db()
@@ -326,16 +409,10 @@ async def main():
     
     # Запускаем все фоновые процессы
     asyncio.create_task(presence_manager())
-    asyncio.create_task(thoughts_loop()) # Новая задача!
+    asyncio.create_task(thoughts_loop())
     
     print("Соня ожила и думает о тебе...")
     await client.run_until_disconnected()
 
 if __name__ == '__main__':
     asyncio.run(main())
-
-
-
-
-
-
