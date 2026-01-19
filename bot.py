@@ -392,43 +392,43 @@ async def check_reactions_loop():
     
     while True:
         try:
-            await asyncio.sleep(10)  # Проверяем каждые 10 секунд
+            await asyncio.sleep(8)  # Проверяем каждые 8 секунд
             
-            # Получаем последние 20 сообщений из диалога
-            messages = await client.get_messages(BOYFRIEND_ID, limit=20)
+            # Получаем последние 15 сообщений из диалога
+            messages = await client.get_messages(BOYFRIEND_ID, limit=15)
             
             for msg in messages:
-                # Пропускаем если это не её сообщение
+                # Пропускаем если это не её сообщение (out=True значит она отправила)
                 if not msg.out:
                     continue
                 
                 # Если у сообщения есть реакции
                 if msg.reactions and msg.reactions.results:
-                    current_reactions = len(msg.reactions.results)
+                    # Проверяем есть ли реакция с флагом chosen=True (это твоя реакция)
+                    has_your_reaction = any(r.chosen for r in msg.reactions.results)
                     
-                    # Проверяем увеличилось ли количество реакций
-                    if msg.id in last_checked_messages:
-                        if current_reactions > last_checked_messages[msg.id]:
-                            # Новая реакция от тебя! Соня может отреагировать
-                            print(f"Обнаружена новая реакция на сообщение {msg.id}")
+                    if has_your_reaction:
+                        # Проверяем не обрабатывали ли мы уже это сообщение
+                        if msg.id not in last_checked_messages:
+                            print(f"Обнаружена твоя реакция на сообщение {msg.id}")
+                            # Помечаем как обработанное
+                            last_checked_messages[msg.id] = True
+                            # Соня может отреагировать (25% шанс)
                             asyncio.create_task(maybe_react_to_own_message(
                                 BOYFRIEND_ID,
                                 msg.id,
                                 ""
                             ))
-                    
-                    # Обновляем счётчик
-                    last_checked_messages[msg.id] = current_reactions
             
-            # Очищаем старые записи (старше 100 сообщений)
-            if len(last_checked_messages) > 100:
-                # Оставляем только последние 50
-                keys_to_keep = list(last_checked_messages.keys())[-50:]
-                last_checked_messages = {k: last_checked_messages[k] for k in keys_to_keep}
+            # Очищаем старые записи
+            if len(last_checked_messages) > 50:
+                keys_to_remove = list(last_checked_messages.keys())[:-30]
+                for k in keys_to_remove:
+                    del last_checked_messages[k]
                 
         except Exception as e:
             print(f"Ошибка проверки реакций: {e}")
-            await asyncio.sleep(30)
+            await asyncio.sleep(20)
 
 async def main():
     init_db()
@@ -448,3 +448,4 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
+
