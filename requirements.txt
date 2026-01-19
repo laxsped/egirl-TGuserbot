@@ -3,3 +3,4 @@ requests
 aiohttp
 psycopg2-binary
 pytz
+groq
