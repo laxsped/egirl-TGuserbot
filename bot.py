@@ -213,7 +213,8 @@ async def thoughts_loop():
             print(f"Ошибка инициативы: {e}")
 
 def make_typos(text):
-    if len(text) < 5 or random.random() > 0.25:
+    # Увеличиваем шанс опечатки до 40%
+    if len(text) < 5 or random.random() > 0.4:
         return text
     text_list = list(text)
     t_type = random.randint(1, 3)
@@ -250,14 +251,21 @@ async def presence_manager():
 async def get_ai_response(message, user_id, user_name):
     is_boyfriend = (user_id == BOYFRIEND_ID)
     
-    moscow_time = datetime.now(pytz.timezone('Europe/Kaliningrad'))
-    current_time_str = moscow_time.strftime("%H:%M")
-    current_day = moscow_time.strftime("%A")
+    kld_time = datetime.now(pytz.timezone('Europe/Kaliningrad'))
+    current_time_str = kld_time.strftime("%H:%M")
+    
+    # ЖЕСТКИЙ ПРOМПТ ДЛЯ ВОЗВРАТА СТИЛЯ
+    SONYA_STYLE = (
+        "Ты Соня, тебе 16. Твой стиль: ПОЛНЫЙ ИГНОР ЗАГЛАВНЫХ БУКВ И ТОЧЕК В КОНЦЕ. "
+        "Пиши как реальная девчонка в телеге: коротко, сленгом, иногда с кучей лишних букв (нееет, блиннн). "
+        "ЗАПРЕТ: Не используй время и цифры в ответах, если тебя об этом не спросили прямо. "
+        "ЗАПРЕТ: Не ставь больше одного смайлика. "
+        "Если Лёша бесит — отвечай дерзко. Если скучаешь — мило, но по-детски."
+    )
 
-    time_context = f"\n\nТЕКУЩИЙ КОНТЕКСТ: Сейчас {current_time_str}, день недели - {current_day}. " \
-                   f"Учитывай время суток в ответах (ночь, утро, день)."
+    time_context = f"\n(Для справки: сейчас {current_time_str}, но не упоминай это просто так)."
 
-    system_prompt = SYSTEM_PROMPT_BOYFRIEND + time_context if is_boyfriend else SYSTEM_PROMPT_OTHERS
+    system_prompt = SONYA_STYLE + time_context if is_boyfriend else SYSTEM_PROMPT_OTHERS
     
     save_to_db(user_id, 'user', message)
     history = get_history_from_db(user_id, limit=40)
@@ -269,16 +277,17 @@ async def get_ai_response(message, user_id, user_name):
             json={
                 'model': 'llama-3.3-70b-versatile',
                 'messages': [{'role': 'system', 'content': system_prompt}] + history,
-                'temperature': 0.8
+                'temperature': 1.0, # Больше рандома! 🚀
+                'presence_penalty': 0.6 # Чтобы не повторялась
             }
         )
         data = response.json()
-        result = data['choices'][0]['message']['content']
+        result = data['choices'][0]['message']['content'].lower().replace('.', '') # Убираем точки
         save_to_db(user_id, 'assistant', result)
         return result
     except Exception as e:
         print(f"Ошибка: {e}")
-        return "сорян зависло"
+        return "блин зависла"
 
 @client.on(events.NewMessage(incoming=True))
 async def handler(event):
@@ -494,3 +503,4 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
+
