@@ -22,7 +22,6 @@ BOYFRIEND_ID = 5902478541
 GROQ_API_KEY = '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'
 DATABASE_URL = os.getenv('DATABASE_URL')
 groq_client = Groq(api_key=GROQ_API_KEY)
-
 # Восстановление сессии
 session_b64 = os.getenv('SESSION_DATA')
 if session_b64:
@@ -116,38 +115,45 @@ def make_typos(text):
 
 # --- VISION (ЗРЕНИЕ) ---
 def get_vision_response(image_path, user_caption, user_id):
+    # Кодируем картинку в base64
     with open(image_path, "rb") as image_file:
         base64_image = base64.b64encode(image_file.read()).decode('utf-8')
     
     is_boyfriend = (user_id == BOYFRIEND_ID)
-    tone = "в своём стиле (коротко, без заглавных, сленг, 16 лет)" if is_boyfriend else "холодно"
-    context = f"Подпись: {user_caption}" if user_caption else "Без подписи"
+    tone = "в своём стиле (коротко, без заглавных, сленг, как девчонка 16 лет)" if is_boyfriend else "холодно и с недоумением"
 
     try:
-        # Используем актуальную модель Llama 4 Vision
+        # Используем Maverick, раз он в списке Vision
         completion = groq_client.chat.completions.create(
-            model="meta-llama/llama-4-vision-preview", # Проверь точное имя в доках!
+            model="meta-llama/llama-4-maverick-17b-128e-instruct",
             messages=[
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": f"Ты Соня. Отреагируй на фото {tone}. {context}. Не будь роботом!"},
+                        {
+                            "type": "text", 
+                            "text": f"Ты Соня. Отреагируй на фото {tone}. Подпись: '{user_caption}'. Не описывай фото, просто дай живую реакцию."
+                        },
                         {
                             "type": "image_url",
                             "image_url": {
-                                "url": f"data:image/jpeg;base64,{base64_image}",
-                            },
-                        },
-                    ],
+                                "url": f"data:image/jpeg;base64,{base64_image}"
+                            }
+                        }
+                    ]
                 }
             ],
             temperature=1,
-            max_tokens=150,
+            max_tokens=150
         )
-        return completion.choices[0].message.content.lower().replace('.', '')
+        
+        # Убираем точки и переводим в нижний регистр для стиля Сони
+        result = completion.choices[0].message.content.lower().replace('.', '')
+        return result
+
     except Exception as e:
-        print(f"Ошибка Vision Llama 4: {e}")
-        return "блин, чет картинка не грузится"
+        print(f"Ошибка Vision: {e}")
+        return "блин, чет картинка не грузится, бесит"
 
 # --- AI RESPONSE (TEXT) ---
 async def get_ai_response(message, user_id):
@@ -453,4 +459,5 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
+
 
