@@ -435,12 +435,11 @@ async def maybe_react_to_own_message(chat_id, message_id, her_message_text):
         print(f"Ошибка своей реакции: {e}")
 
 async def health_check(request): 
-    return web.Response(text="Alive")
-
-app = web.Application()
-app.router.add_get('/', health_check)
-
-last_checked_messages = {}
+    return web.Response(
+        text="Bot is alive!", 
+        status=200,
+        headers={'Content-Type': 'text/plain'}
+    )
 
 async def check_reactions_loop():
     global last_checked_messages
@@ -477,6 +476,27 @@ async def check_reactions_loop():
             print(f"Ошибка проверки реакций: {e}")
             await asyncio.sleep(20)
 
+# Добавь эту функцию:
+async def self_ping_loop():
+    """Бот сам себя пингует чтобы не заснуть"""
+    await asyncio.sleep(60)  # Ждём минуту после старта
+    
+    render_url = os.environ.get('RENDER_EXTERNAL_URL', 'https://girlfriend-bot-0v98.onrender.com')
+    
+    while True:
+        try:
+            await asyncio.sleep(600)  # Каждые 10 минут
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{render_url}/health") as resp:
+                    if resp.status == 200:
+                        print("✅ Self-ping успешен")
+                    else:
+                        print(f"⚠️ Self-ping вернул {resp.status}")
+        except Exception as e:
+            print(f"❌ Ошибка self-ping: {e}")
+            await asyncio.sleep(60)
+
 async def main():
     init_db()
     runner = web.AppRunner(app)
@@ -488,9 +508,11 @@ async def main():
     asyncio.create_task(presence_manager())
     asyncio.create_task(thoughts_loop())
     asyncio.create_task(check_reactions_loop())
+    asyncio.create_task(self_ping_loop())
     
     print("Соня ожила, думает о тебе и иногда ревнует... 💕😤")
     await client.run_until_disconnected()
 
 if __name__ == '__main__':
     asyncio.run(main())
+
