@@ -115,11 +115,15 @@ def make_typos(text):
         text_list.insert(idx, text_list[idx])
     return "".join(text_list)
 
-# --- VISION (ЗРЕНИЕ СОНИ) ---
-def get_vision_response(image_path, user_caption, user_id):
+# --- VISION (Улучшенный промпт) ---
+def get_vision_response(image_path, user_id):
     with open(image_path, "rb") as image_file:
         base64_image = base64.b64encode(image_file.read()).decode('utf-8')
     
+    # Подтягиваем историю, чтобы она понимала, о чем вы говорили ДО фото
+    history = get_history_from_db(user_id, limit=5)
+    history_context = "\n".join([f"{m['role']}: {m['content']}" for m in history])
+
     try:
         completion = groq_client.chat.completions.create(
             model="meta-llama/llama-4-maverick-17b-128e-instruct",
@@ -129,8 +133,11 @@ def get_vision_response(image_path, user_caption, user_id):
                     "content": [
                         {
                             "type": "text", 
-                            "text": "Ты Соня, тебе 16. Ответь на фото коротко и в своем стиле. "
-                                    "ОБЯЗАТЕЛЬНО: В конце ответа добавь строку [MEMORY: краткое описание что на фото]."
+                            "text": f"Ты Соня, тебе 16. Твой парень прислал фото. \n"
+                                    f"Контекст последних сообщений: {history_context}\n"
+                                    "1. Сначала напиши краткое описание фото для своей памяти в формате [MEMORY: ...].\n"
+                                    "2. Затем ответь парню как реальная девушка (без заглавных, коротко, сленг, 1 эмодзи). "
+                                    "НЕ описывай фото как ИИ, просто отреагируй на него эмоционально!"
                         },
                         {
                             "type": "image_url",
@@ -139,12 +146,12 @@ def get_vision_response(image_path, user_caption, user_id):
                     ]
                 }
             ],
-            temperature=0.7
+            temperature=0.5 # Снижаем, чтобы меньше врала про туман
         )
         return completion.choices[0].message.content
     except Exception as e:
         print(f"Ошибка Vision: {e}")
-        return "блин, чет картинка не грузится [MEMORY: ошибка загрузки]"
+        return "блин картинка не грузится [MEMORY: ошибка]"
 
 # --- AI RESPONSE (TEXT) ---
 async def get_ai_response(message, user_id):
@@ -329,19 +336,18 @@ async def handler(event):
         
         async with client.action(event.chat_id, 'typing'):
             # Вызываем зрение ОДИН раз
-            raw_res = get_vision_response(photo_path, text, user_id)
+            raw_res = get_vision_response(photo_path, user_id)
             
-            # Разделяем ответ и память
+            # Чистим ответ от технических тегов
             if "[MEMORY:" in raw_res:
-                reply_to_user, memory = raw_res.split("[MEMORY:", 1)
-                memory = "[память о фото: " + memory.strip()
+                parts = raw_res.split("[MEMORY:", 1)
+                reply_to_user = parts[0].strip()
+                memory_content = parts[1].split("]", 1)[0].strip()
+                save_to_db(user_id, 'assistant', f"[видела на фото: {memory_content}]")
             else:
                 reply_to_user = raw_res
-                memory = f"[видела фото, подпись: {text}]"
+                save_to_db(user_id, 'assistant', f"[видела какое-то фото]")
 
-            # Сохраняем в Postgres именно описание!
-            save_to_db(user_id, 'assistant', memory)
-            
             final_text = make_typos(reply_to_user.lower().replace('.', '').strip())
             
             if os.path.exists(photo_path):
@@ -433,3 +439,4 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
+
