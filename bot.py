@@ -359,6 +359,7 @@ async def handler(event):
             is_online = True
             
         await client.send_read_acknowledge(event.chat_id, max_id=event.id)
+        
         # Имитируем "разглядывание" фото
         await asyncio.sleep(random.randint(3, 7)) 
         
@@ -366,15 +367,25 @@ async def handler(event):
         photo_path = await event.download_media()
         
         async with client.action(event.chat_id, 'typing'):
-            # Генерируем ответ с глазами
-            reply = get_vision_response(photo_path, text, user_id)
-            reply = make_typos(reply)
-            os.remove(photo_path) # Удаляем файл
-            await asyncio.sleep(random.randint(2, 5)) # Печатает
+            # 1. Генерируем ответ ОДИН раз
+            raw_reply = get_vision_response(photo_path, text, user_id)
             
-        await event.respond(reply)
-        save_to_db(user_id, 'user', f"[ФОТО] {text}")
-        save_to_db(user_id, 'assistant', reply)
+            # 2. Сохраняем "контекст увиденного" в базу ПЕРЕД тем как портить текст опечатками
+            # Это поможет Соне помнить, что реально было на картинке
+            vision_memory = f"[на фото было: {raw_reply}]"
+            save_to_db(user_id, 'assistant', vision_memory)
+            
+            # 3. Делаем текст "живым" (опечатки и т.д.)
+            final_reply = make_typos(raw_reply)
+            
+            # Удаляем фото сразу после обработки, чтобы не висело
+            if os.path.exists(photo_path):
+                os.remove(photo_path)
+                
+            await asyncio.sleep(random.randint(2, 5)) # Имитируем печать
+            
+        # 4. Отправляем ответ
+        await event.respond(final_reply)
         return
     # ==============================
 
@@ -459,5 +470,6 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
+
 
 
