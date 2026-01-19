@@ -298,103 +298,76 @@ async def handler(event):
     
     user_id = event.sender_id
     
-    # НОВОЕ #20: Проверяем на обидные слова
+    # 1. Проверяем на обидные слова
     if user_id == BOYFRIEND_ID and check_if_offensive(event.text):
         is_offended = True
         offended_until = datetime.now() + timedelta(hours=random.randint(2, 6))
         print(f"Соня обиделась! До {offended_until.strftime('%H:%M')}")
     
-    # НОВОЕ #20: Если обижена - отвечает сухо
+    # 2. Если обижена — отвечает сухо и быстро
     if is_offended and user_id == BOYFRIEND_ID:
-    if datetime.now() < offended_until:
-        cold_responses = ["отвали", "бесишь", "пфф", "ой всё", "мда"] # Более живые ответы
-        await asyncio.sleep(random.randint(2, 10)) # Не заставляй себя ждать по 3 минуты!
-        await event.respond(random.choice(cold_responses))
-        return
+        if datetime.now() < offended_until:
+            cold_responses = ["отвали", "бесишь", "пфф", "ой всё", "мда"]
+            await asyncio.sleep(random.randint(2, 8))
+            await event.respond(random.choice(cold_responses))
+            return
         else:
-            # Помирилась
             is_offended = False
-            makeup_msg = random.choice([
-                "ладно, не обижаюсь уже",
-                "прости что молчала",
-                "соскучилась"
-            ])
-            await asyncio.sleep(random.randint(10, 30))
-            await event.respond(makeup_msg)
-            print("Соня помирилась")
+            await event.respond("ладно, проехали") # Короткое примирение
             return
     
-    # НОВОЕ #4: Режим "занята" (школа)
-    moscow_time = datetime.now(pytz.timezone('Europe/Kaliningrad'))
-    hour = moscow_time.hour
-    is_school_time = (9 <= hour < 15) and moscow_time.weekday() < 5
+    # 3. Режим "занята" (школа)
+    kld_now = datetime.now(pytz.timezone('Europe/Kaliningrad'))
+    hour = kld_now.hour
+    is_school_time = (9 <= hour < 15) and kld_now.weekday() < 5
     
-    if is_school_time and user_id == BOYFRIEND_ID and random.random() < 0.4:
-        busy_responses = [
-            "на уроке, потом отвечу",
-            "щас контрольная",
-            "не могу, на паре",
-            "потом напишу ок?"
-        ]
-        await asyncio.sleep(random.randint(30, 120))
+    if is_school_time and user_id == BOYFRIEND_ID and random.random() < 0.3:
+        busy_responses = ["на уроке", "щас контрольная", "не могу писать", "потом"]
+        await asyncio.sleep(random.randint(10, 30))
         await event.respond(random.choice(busy_responses))
-        print("Соня на уроках")
         return
     
-    if not is_online and random.random() < 0.1:
-        print("Соня офлайн, проигнорила")
-        return
-    
+    # 4. Логика "прочтения" и захода в сеть
     if is_online:
-    await asyncio.sleep(random.randint(1, 5)) # Читает почти сразу
-else:
-    await asyncio.sleep(random.randint(10, 30)) # Заходит в сеть за полминуты
-    await client(functions.account.UpdateStatusRequest(offline=False))
-    is_online = True
-        await asyncio.sleep(random.randint(10, 40))
+        await asyncio.sleep(random.randint(1, 5)) # Читает почти сразу
+    else:
+        # Если была офлайн, заходит в сеть быстрее (10-30 сек)
+        await asyncio.sleep(random.randint(10, 30))
+        try:
+            await client(functions.account.UpdateStatusRequest(offline=False))
+            is_online = True
+        except: pass
     
+    # Ставим реакцию иногда
     if random.random() < 0.3 and user_id == BOYFRIEND_ID:
         await maybe_react_to_message(event, event.text)
-        await asyncio.sleep(random.uniform(2, 5))
+        await asyncio.sleep(random.uniform(1, 3))
     
     try: 
         await client.send_read_acknowledge(event.chat_id, max_id=event.id)
-    except: 
-        pass
+    except: pass
     
+    # 5. Генерим ответ через ИИ
     reply = await get_ai_response(event.text, user_id, "")
     
+    # Шанс отправить двумя сообщениями
     messages_to_send = [reply]
     if len(reply) > 30 and random.random() < 0.3:
         parts = reply.split(' ', 1)
         if len(parts) > 1:
             messages_to_send = parts
-    
+
     last_message_id = None
     for msg in messages_to_send:
         msg = make_typos(msg)
+        typing_time = max(1.5, min(len(msg) / 4, 7))
         
-        # НОВОЕ #13: Улучшенная печать с паузами
-        if random.random() < 0.15:
-            async with client.action(event.chat_id, 'typing'):
-                await asyncio.sleep(random.uniform(2, 4))
-            await asyncio.sleep(random.uniform(1, 3))
-        
-        typing_time = max(2, min(len(msg) / random.uniform(2.5, 3.5), 10))
-        
-        if random.random() < 0.1 and len(msg) > 20:
-            async with client.action(event.chat_id, 'typing'):
-                await asyncio.sleep(typing_time / 2)
-            await asyncio.sleep(random.uniform(1, 2))
-            async with client.action(event.chat_id, 'typing'):
-                await asyncio.sleep(typing_time / 2)
-        else:
-            async with client.action(event.chat_id, 'typing'):
-                await asyncio.sleep(typing_time)
+        async with client.action(event.chat_id, 'typing'):
+            await asyncio.sleep(typing_time)
         
         sent_msg = await event.respond(msg)
         last_message_id = sent_msg.id
-        await asyncio.sleep(random.uniform(1, 3))
+        await asyncio.sleep(random.uniform(0.5, 1.5))
     
     if last_message_id and user_id == BOYFRIEND_ID:
         asyncio.create_task(maybe_react_to_own_message(event.chat_id, last_message_id, reply))
@@ -502,5 +475,6 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
+
 
 
