@@ -25,7 +25,7 @@ logger = logging.getLogger("SonyaBot")
 API_ID = 33125954
 API_HASH = '42dd1070f641ea0060b39067c1e187e7'
 PHONE = '+79118682172'
-BOYFRIEND_ID = 5902478541
+BOYFRIEND_ID = 5902478542
 GROQ_API_KEY = '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'
 DATABASE_URL = os.getenv('DATABASE_URL')
 MODEL_NAME = "meta-llama/llama-4-maverick-17b-128e-instruct"
@@ -158,7 +158,7 @@ SYSTEM_PROMPT_REAL_GF = """
 
 правила стиля:
 - только маленькие буквы и иногда full КАПС (эмоции). точки только для драмы.
-- сленг: рофл, рил, треш, жиза, пон, хз, кринж.
+- сленг: рофл, рил, треш, жиза, пон, хз, кринж, имхо, бтв.
 - никаких "телячьих ласок" и вежливости.
 - пиши коротко, как в тг.
 - можешь использовать мат, если это уместно.
