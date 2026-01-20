@@ -1,55 +1,55 @@
-from telethon import TelegramClient, events, functions
-import requests
+import logging
 import asyncio
 import random
 import os
 import base64
-import psycopg2
-from aiohttp import web
+import signal
+import sys
+import time
 from datetime import datetime, timedelta
 import pytz
+import psycopg2
+from psycopg2 import pool
+from telethon import TelegramClient, events, functions
+from aiohttp import web
 from groq import Groq
 
-# --- КОНФИГУРАЦИЯ ---
-is_online = False
-is_offended = False
-offended_until = None
+# --- КОНФИГУРАЦИЯ И ЛОГИРОВАНИЕ ---
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger("SonyaBot")
 
-api_id = 33125954
-api_hash = '42dd1070f641ea0060b39067c1e187e7'
-phone = '+79118682172'
+# Настройки
+API_ID = 33125954
+API_HASH = '42dd1070f641ea0060b39067c1e187e7'
+PHONE = '+79118682172'
 BOYFRIEND_ID = 5902478541
 GROQ_API_KEY = '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'
 DATABASE_URL = os.getenv('DATABASE_URL')
+MODEL_NAME = "meta-llama/llama-4-maverick-17b-128e-instruct"
+
+# Глобальные переменные состояния
+is_online = False
+db_pool = None
 groq_client = Groq(api_key=GROQ_API_KEY)
+# Словарь для накопления сообщений: {user_id: {'timer': Task, 'messages': []}}
+message_buffers = {}
 
-# Восстановление сессии
-session_b64 = os.getenv('SESSION_DATA')
-if session_b64:
+# --- ПУЛ СОЕДИНЕНИЙ С БД ---
+def init_db_pool():
+    global db_pool
     try:
-        session_bytes = base64.b64decode(session_b64)
-        with open('girlfriend_session.session', 'wb') as f:
-            f.write(session_bytes)
-        print("Сессия восстановлена!")
-    except Exception as e:
-        print(f"Ошибка сессии: {e}")
-
-client = TelegramClient('girlfriend_session', api_id, api_hash)
-
-# --- ПРОМПТЫ ---
-SYSTEM_PROMPT_BOYFRIEND = """ты соня, девушка 16 лет. переписываешься со своим парнем лёшей. 
-ВАЖНО: ты ДЕВУШКА! стиль: коротко, без заглавных, иногда дерзко/игриво, используешь эмодзи не часто. 
-пиши как школьница: "ну ты и тормоз", "аххахах дурачок", "блинн скучаю". макс 1-2 предложения."""
-
-SYSTEM_PROMPT_OTHERS = """ты соня, девушка 16 лет. пишет незнакомец. ты осторожная. 
-стиль: коротко, без заглавных. если лезут — "отстань", "ты кто вообще"."""
-
-# --- БАЗА ДАННЫХ (Postgres) ---
-def init_db():
-    try:
-        conn = psycopg2.connect(DATABASE_URL)
+        db_pool = psycopg2.pool.ThreadedConnectionPool(
+            minconn=1, maxconn=10, dsn=DATABASE_URL
+        )
+        logger.info("DB Connection Pool создан")
+        
+        # Инициализация таблицы
+        conn = db_pool.getconn()
         cur = conn.cursor()
-        cur.execute('''    
+        cur.execute('''      
             CREATE TABLE IF NOT EXISTS messages (
                 id SERIAL PRIMARY KEY,
                 user_id BIGINT,
@@ -58,406 +58,359 @@ def init_db():
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             CREATE INDEX IF NOT EXISTS idx_user_id ON messages(user_id);
+            CREATE INDEX IF NOT EXISTS idx_timestamp ON messages(timestamp);
         ''')
         conn.commit()
         cur.close()
-        conn.close()
+        db_pool.putconn(conn)
     except Exception as e:
-        print(f"Ошибка БД init: {e}")
+        logger.critical(f"Не удалось подключиться к БД: {e}")
+        sys.exit(1)
 
-def save_to_db(user_id, role, content):
+def run_db_query(query, params=None, fetch=False):
+    """Безопасное выполнение запросов через пул"""
+    conn = None
     try:
-        conn = psycopg2.connect(DATABASE_URL)
+        conn = db_pool.getconn()
         cur = conn.cursor()
-        cur.execute('INSERT INTO messages (user_id, role, content) VALUES (%s, %s, %s)', 
-                    (user_id, role, content))
-        conn.commit()
+        cur.execute(query, params)
+        if fetch:
+            result = cur.fetchall()
+        else:
+            conn.commit()
+            result = None
         cur.close()
-        conn.close()
-    except Exception as e:
-        print(f"Ошибка записи в БД: {e}")
-
-def get_history_from_db(user_id, limit=40):
-    try:
-        conn = psycopg2.connect(DATABASE_URL)
-        cur = conn.cursor()
-        cur.execute('SELECT role, content FROM messages WHERE user_id = %s ORDER BY id DESC LIMIT %s', 
-                    (user_id, limit))
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
-        return [{'role': r, 'content': c} for r, c in reversed(rows)]
-    except Exception as e:
-        print(f"Ошибка чтения БД: {e}")
-        return []
-
-# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
-def check_if_offensive(text):
-    if not text: return False
-    offensive_words = [
-        'дура', 'тупая', 'достала', 'заебала', 'отстань пж', 
-        'надоела', 'бесишь', 'идиотка', 'глупая', 'stupid'
-    ]
-    return any(word in text.lower() for word in offensive_words)
-
-def make_typos(text):
-    if len(text) < 5 or random.random() > 0.4:
-        return text
-    text_list = list(text)
-    t_type = random.randint(1, 3)
-    if t_type == 1 and len(text_list) > 1:
-        text_list.pop(random.randint(0, len(text_list)-1))
-    elif t_type == 2:
-        idx = random.randint(0, len(text_list)-2)
-        text_list[idx], text_list[idx+1] = text_list[idx+1], text_list[idx]
-    elif t_type == 3:
-        idx = random.randint(0, len(text_list)-1)
-        text_list.insert(idx, text_list[idx])
-    return "".join(text_list)
-
-# --- VISION ---
-def get_vision_response(image_path, user_id):
-    with open(image_path, "rb") as image_file:
-        base64_image = base64.b64encode(image_file.read()).decode('utf-8')
-    
-    history = get_history_from_db(user_id, limit=5)
-    history_context = "\n".join([f"{m['role']}: {m['content']}" for m in history])
-
-    try:
-        completion = groq_client.chat.completions.create(
-            model="meta-llama/llama-4-maverick-17b-128e-instruct",
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text", 
-                            "text": f"Ты Соня, тебе 16. Твой парень прислал фото. \n"
-                                    f"Контекст последних сообщений: {history_context}\n"
-                                    "1. Сначала напиши краткое описание фото для своей памяти в формате [MEMORY: ...].\n"
-                                    "2. Затем ответь парню как реальная девушка (без заглавных, коротко, сленг, 1 эмодзи). "
-                                    "НЕ описывай фото как ИИ, просто отреагируй на него эмоционально!"
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
-                        }
-                    ]
-                }
-            ],
-            temperature=0.5
-        )
-        return completion.choices[0].message.content
-    except Exception as e:
-        print(f"Ошибка Vision: {e}")
-        return "блин картинка не грузится [MEMORY: ошибка]"
-
-# --- AI RESPONSE (TEXT) ---
-async def get_ai_response(message, user_id):
-    is_boyfriend = (user_id == BOYFRIEND_ID)
-    
-    SONYA_STYLE = (
-        "Ты Соня, тебе 16. Твой стиль: ПОЛНЫЙ ИГНОР ЗАГЛАВНЫХ БУКВ И ТОЧЕК В КОНЦЕ. "
-        "Пиши как реальная девчонка в телеге: коротко, сленгом, иногда с кучей лишних букв. "
-        "ЗАПРЕТ: Не используй время и цифры, не ставь больше одного смайлика. "
-        "Если Лёша бесит — отвечай дерзко. Если скучаешь — мило."
-    )
-    
-    system_prompt = SONYA_STYLE if is_boyfriend else SYSTEM_PROMPT_OTHERS
-    
-    save_to_db(user_id, 'user', message)
-    history = get_history_from_db(user_id, limit=40)
-    
-    try:
-        completion = groq_client.chat.completions.create(
-            model="meta-llama/llama-4-maverick-17b-128e-instruct",
-            messages=[{'role': 'system', 'content': system_prompt}] + history,
-            temperature=1.0,
-            presence_penalty=0.6
-        )
-        
-        result = completion.choices[0].message.content.lower().replace('.', '').strip()
-        save_to_db(user_id, 'assistant', result)
         return result
     except Exception as e:
-        print(f"Ошибка AI (Maverick Text): {e}")
-        return "блин зависла чето"
+        logger.error(f"Ошибка БД: {e}")
+        if conn: conn.rollback()
+        return [] if fetch else None
+    finally:
+        if conn: db_pool.putconn(conn)
 
-# --- BACKGROUND TASKS ---
-async def thoughts_loop():
-    daily_messages_sent = 0
-    last_reset_day = datetime.now().day
-    
-    while True:
-        await asyncio.sleep(random.randint(1800, 3600))
-        
-        current_day = datetime.now().day
-        if current_day != last_reset_day:
-            daily_messages_sent = 0
-            last_reset_day = current_day
-        
-        if daily_messages_sent >= 3:
-            continue
-        
-        moscow_time = datetime.now(pytz.timezone('Europe/Kaliningrad'))
-        hour = moscow_time.hour
-        
-        if not (8 <= hour <= 23):
-            continue
-        
-        if random.random() > 0.2:
-            continue
+# --- БИЗНЕС-ЛОГИКА БД ---
+def save_message(user_id, role, content):
+    run_db_query(
+        'INSERT INTO messages (user_id, role, content) VALUES (%s, %s, %s)', 
+        (user_id, role, content)
+    )
 
-        is_jealous = False
+def get_history(user_id, limit=30):
+    rows = run_db_query(
+        'SELECT role, content FROM messages WHERE user_id = %s ORDER BY id DESC LIMIT %s',
+        (user_id, limit), fetch=True
+    )
+    return [{'role': r, 'content': c} for r, c in reversed(rows)]
+
+def get_recent_gossip(exclude_user_id):
+    """Получает контекст общения с ДРУГИМИ людьми для 'ревности' или сплетен"""
+    rows = run_db_query(
+        '''SELECT content FROM messages 
+           WHERE user_id != %s AND role = 'user' 
+           AND timestamp > NOW() - INTERVAL '12 hours' 
+           ORDER BY RANDOM() LIMIT 2''',
+        (exclude_user_id,), fetch=True
+    )
+    if not rows: return "Никто особо не писал."
+    return "Кто-то писал: " + "; ".join([r[0] for r in rows])
+
+# --- ЛОГИКА ИИ И RETRY ---
+def make_typos(text):
+    if len(text) < 5 or random.random() > 0.6: return text
+    # Мягкие опечатки: пропуск буквы или перестановка
+    if random.random() < 0.1:
+        idx = random.randint(0, len(text)-1)
+        return text[:idx] + text[idx+1:]
+    return text.lower() # Соня пишет в нижнем регистре
+
+async def call_groq_with_retry(messages, temp=0.7, retries=3):
+    """Обертка с Retry Logic"""
+    for attempt in range(retries):
         try:
-            conn = psycopg2.connect(DATABASE_URL)
-            cur = conn.cursor()
-            cur.execute('SELECT timestamp FROM messages WHERE user_id = %s AND role = \'user\' ORDER BY timestamp DESC LIMIT 1', (BOYFRIEND_ID,))
-            last_msg = cur.fetchone()
-            cur.close()
-            conn.close()
-            if last_msg:
-                hours_since = (datetime.now() - last_msg[0]).total_seconds() / 3600
-                if hours_since > 6: is_jealous = True
-        except: pass
-        
-        if is_jealous:
-            prompts = ["напиши лёше что он куда-то пропал и ты беспокоишься", "спроси где он был, немного обиженно"]
-        elif 8 <= hour < 11: prompts = ["напиши лёше доброе утро", "спроси как он спал"]
-        elif 18 <= hour < 22: prompts = ["спроси чем он занят", "напиши что скучаешь"]
-        else: prompts = ["спроси что он делает", "напиши что скучаешь"]
-        
-        prompt = random.choice(prompts)
-        
-        try:
-            response = groq_client.chat.completions.create(
-                model="meta-llama/llama-4-maverick-17b-128e-instruct",
-                messages=[
-                    {'role': 'system', 'content': SYSTEM_PROMPT_BOYFRIEND},
-                    {'role': 'user', 'content': prompt}
-                ],
-                temperature=1.1
+            completion = await asyncio.to_thread(
+                groq_client.chat.completions.create,
+                model=MODEL_NAME,
+                messages=messages,
+                temperature=temp
             )
-            text = response.choices[0].message.content
-            text = make_typos(text.lower().replace('.', ''))
-            
-            global is_online
-            if not is_online:
-                await client(functions.account.UpdateStatusRequest(offline=False))
-                is_online = True
-                await asyncio.sleep(random.randint(5, 15))
-            
-            async with client.action(BOYFRIEND_ID, 'typing'):
-                await asyncio.sleep(random.randint(3, 7))
-            
-            await client.send_message(BOYFRIEND_ID, text)
-            save_to_db(BOYFRIEND_ID, 'assistant', text)
-            daily_messages_sent += 1
-            print(f"Соня сама написала: {text}")
-            
+            return completion.choices[0].message.content
         except Exception as e:
-            print(f"Ошибка инициативы: {e}")
+            logger.warning(f"Ошибка API (попытка {attempt+1}/{retries}): {e}")
+            await asyncio.sleep(1 + attempt)
+    return "блин, инет тупит жестко, ща"
 
-async def presence_manager():
-    global is_online
-    while True:
-        online_time = random.randint(120, 600)
-        offline_time = random.randint(900, 2700)
-        try:
-            await client(functions.account.UpdateStatusRequest(offline=False))
-            is_online = True
-            await asyncio.sleep(online_time)
-            await client(functions.account.UpdateStatusRequest(offline=True))
-            is_online = False
-            await asyncio.sleep(offline_time)
-        except Exception as e:
-            await asyncio.sleep(60)
+# --- ПРОМПТЫ И ХАРАКТЕР ---
+SYSTEM_PROMPT_REAL_GF = """
+Ты Соня, тебе 16. Переписываешься со своим парнем Лёшей.
+ХАРАКТЕР: Милая, но с характером. Ты не "служанка", ты личность. Любишь Лёшу, но не душнишь.
+СТИЛЬ: 
+- Пиши как в Телеграме: коротко, без точек в конце, всё с маленькой буквы.
+- Используй сленг умеренно (типа, крч, треш, имба).
+- Эмодзи: 1-2 на сообщение, не больше.
+- Если Лёша пишет много сообщений подряд — отвечай на суть всего текста.
 
-async def check_reactions_loop():
-    last_checked_messages = {}
-    while True:
-        try:
-            await asyncio.sleep(10)
-            messages = await client.get_messages(BOYFRIEND_ID, limit=10)
-            for msg in messages:
-                if not msg.out: continue
-                if msg.reactions and msg.reactions.results:
-                    has_your_reaction = any(r.chosen for r in msg.reactions.results)
-                    if has_your_reaction and msg.id not in last_checked_messages:
-                        last_checked_messages[msg.id] = True
-                        asyncio.create_task(maybe_react_to_own_message(BOYFRIEND_ID, msg.id, ""))
-            
-            if len(last_checked_messages) > 50:
-                last_checked_messages.clear()
-        except Exception as e:
-            print(f"Ошибка чек реакций: {e}")
-            await asyncio.sleep(20)
+ПАМЯТЬ И КОНТЕКСТ:
+- Если ты видишь в контексте [GOSSIP: ...], это то, что тебе писали другие люди. Можешь пожаловаться Лёше или посмеяться над этим, если в тему.
+- Проявляй инициативу! Спрашивай, как у него дела, что делает.
 
-async def maybe_react_to_own_message(chat_id, message_id, text):
-    if random.random() > 0.25: return
-    await asyncio.sleep(random.uniform(2, 8))
-    reactions = ['😅', '🙈', '😳', '🥰', '❤️']
-    try:
-        await client.send_reaction(chat_id, message_id, random.choice(reactions))
-    except: pass
+ВАЖНО: Твоя цель — поддерживать живой, теплый диалог, а не просто отвечать "ок".
+"""
 
-async def maybe_react_to_message(event, message_text):
-    if random.random() > 0.4: return
-    text_lower = message_text.lower()
-    if any(w in text_lower for w in ['люблю', 'милая', 'красивая']): reactions = ['❤️', '🥰', '😘']
-    elif any(w in text_lower for w in ['ахах', 'лол', 'смеш']): reactions = ['😂', '🤣']
-    elif any(w in text_lower for w in ['груст', 'плохо']): reactions = ['😢', '🥺']
-    else: reactions = ['👍', '❤️', '😊']
-    try:
-        await asyncio.sleep(random.uniform(1, 4))
-        await client.send_reaction(event.chat_id, event.id, random.choice(reactions))
-    except: pass
+# --- ОБРАБОТЧИКИ ---
 
-# --- MAIN HANDLER ---
+async def process_user_buffer(user_id, client):
+    """Функция, которая срабатывает после паузы (debounce)"""
+    if user_id not in message_buffers: return
+    
+    messages_text = " ".join(message_buffers[user_id]['messages'])
+    del message_buffers[user_id] # Очищаем буфер
+    
+    logger.info(f"Обработка батча от {user_id}: {messages_text}")
+    
+    # 1. Сохраняем "пакет" как одно сообщение пользователя (для красоты истории)
+    # Или можно сохранять каждое, но для контекста ИИ лучше одним блоком.
+    save_message(user_id, 'user', messages_text)
+    
+    is_boyfriend = (user_id == BOYFRIEND_ID)
+    
+    # 2. Формируем контекст
+    history = get_history(user_id)
+    
+    system_prompt = SYSTEM_PROMPT_REAL_GF
+    if is_boyfriend:
+        # Добавляем сплетни (контекст других чатов)
+        gossip = get_recent_gossip(user_id)
+        system_prompt += f"\n[SYSTEM UPDATE: Тебе сегодня писали другие: '{gossip}'. Если Лёша спросит или к слову придется — можешь рассказать.]"
+    else:
+        system_prompt = "Ты Соня, 16 лет. Пишет незнакомец. Отвечай холодно, коротко. 'Ты кто?', 'Не знамлюсь'."
+
+    # 3. Запрос к ИИ
+    response_text = await call_groq_with_retry(
+        [{'role': 'system', 'content': system_prompt}] + history,
+        temp=0.8 if is_boyfriend else 0.5
+    )
+    
+    # 4. Постобработка и отправка (Burst sending)
+    # Убираем технические пометки и мусор
+    clean_text = response_text.replace('[MEMORY:', '').replace(']', '').strip()
+    clean_text = clean_text.lower().replace('.', '')
+    
+    save_message(user_id, 'assistant', clean_text)
+    
+    # Разбиваем на несколько сообщений, если ответ длинный или есть разделители
+    parts = []
+    if len(clean_text) > 40 and random.random() < 0.7:
+        # Простая эвристика разбиения по знакам препинания или союзам
+        for sep in [', но ', ', а ', ' и ', '? ']:
+            if sep in clean_text:
+                p = clean_text.split(sep, 1)
+                parts = [p[0], sep.strip() + ' ' + p[1]]
+                break
+        if not parts: parts = [clean_text]
+    else:
+        parts = [clean_text]
+
+    # Имитация тайпинга и отправка
+    async with client.action(user_id, 'typing'):
+        for part in parts:
+            part = make_typos(part)
+            typing_time = len(part) * 0.08  # Скорость печати
+            await asyncio.sleep(typing_time) 
+            await client.send_message(user_id, part)
+            await asyncio.sleep(random.uniform(0.5, 1.5)) # Пауза между сообщениями
+
+# --- CLIENT INIT ---
+client = TelegramClient('girlfriend_session', API_ID, API_HASH)
+
 @client.on(events.NewMessage(incoming=True))
-async def handler(event):
-    global is_online, is_offended, offended_until
+async def main_handler(event):
     if event.is_group or event.is_channel: return
     
     user_id = event.sender_id
-    text = event.text if event.text else ""
-
-    # === БЛОК ФОТО ===
+    text = event.text or ""
+    
+    # === VISION (ФОТО) ===
     if event.photo:
+        # Фото обрабатываем сразу, без буфера (сложно батчить файлы)
         await client.send_read_acknowledge(event.chat_id, max_id=event.id)
         photo_path = await event.download_media()
         
-        async with client.action(event.chat_id, 'typing'):
-            raw_res = get_vision_response(photo_path, user_id)
-            
-            if "[MEMORY:" in raw_res:
-                parts = raw_res.split("[MEMORY:", 1)
-                reply_to_user = parts[0].strip()
-                memory_content = parts[1].split("]", 1)[0].strip()
-                save_to_db(user_id, 'assistant', f"[видела на фото: {memory_content}]")
-            else:
-                reply_to_user = raw_res
-                save_to_db(user_id, 'assistant', f"[видела какое-то фото]")
-
-            final_text = make_typos(reply_to_user.lower().replace('.', '').strip())
-            
-            if os.path.exists(photo_path):
-                os.remove(photo_path)
-            
-            await asyncio.sleep(random.randint(3, 6))
-            await event.respond(final_text)
-        return
-
-    # Обида
-    if user_id == BOYFRIEND_ID and check_if_offensive(text):
-        is_offended = True
-        offended_until = datetime.now() + timedelta(hours=random.randint(2, 6))
-        print(f"Обиделась до {offended_until}")
-
-    if is_offended and user_id == BOYFRIEND_ID:
-        if datetime.now() < offended_until:
-            await asyncio.sleep(random.randint(2, 8))
-            await event.respond(random.choice(["отвали", "бесишь", "ой всё"]))
-            return
-        else:
-            is_offended = False
-            await event.respond("ладно, проехали")
-            return
-
-    # НОВОЕ: Смягчённая школа с ИИ-генерацией + ghosting
-kld_now = datetime.now(pytz.timezone('Europe/Kaliningrad'))
-if (9 <= kld_now.hour < 15) and kld_now.weekday() < 5 and user_id == BOYFRIEND_ID and random.random() < 0.08:
-    # Прочитывает
-    try: 
-        await client.send_read_acknowledge(event.chat_id, max_id=event.id)
-    except: 
-        pass
-    
-    # 40% шанс вообще не ответить (прочитала и всё)
-    if random.random() < 0.4:
-        print("Прочитала но не ответила (на уроке)")
-        return
-    
-    # Генерит уникальную отмазку через ИИ
-    try:
-        busy_prompt = "напиши лёше что ты на уроке/паре и не можешь отвечать сейчас. очень коротко, 3-5 слов, без точки"
-        response = groq_client.chat.completions.create(
-            model="meta-llama/llama-4-maverick-17b-128e-instruct",
-            messages=[
-                {'role': 'system', 'content': SYSTEM_PROMPT_BOYFRIEND},
-                {'role': 'user', 'content': busy_prompt}
-            ],
-            temperature=1.2
-        )
-        busy_msg = response.choices[0].message.content.lower().replace('.', '').strip()
-        busy_msg = make_typos(busy_msg)
+        history_context = "\n".join([f"{m['role']}: {m['content']}" for m in get_history(user_id, 5)])
         
-        await asyncio.sleep(random.randint(5, 15))
-        await event.respond(busy_msg)
-        print(f"Занята (школа): {busy_msg}")
-        return
-    except Exception as e:
-        print(f"Ошибка генерации busy: {e}")
-        # Фоллбэк если ИИ упал
-        await asyncio.sleep(random.randint(5, 15))
-        await event.respond(random.choice(["на уроке", "потом"]))
+        # Специальный Vision запрос
+        with open(photo_path, "rb") as f:
+            b64_img = base64.b64encode(f.read()).decode('utf-8')
+            
+        try:
+            vis_resp = await asyncio.to_thread(
+                groq_client.chat.completions.create,
+                model=MODEL_NAME,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": f"Ты Соня. Контекст: {history_context}. \nОпиши что видишь ДЛЯ СЕБЯ в теге [MEMORY:...], а потом ответь парню эмоционально и мило."},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"}}
+                    ]
+                }]
+            )
+            raw = vis_resp.choices[0].message.content
+            # Парсинг ответа
+            if "[MEMORY:" in raw:
+                mem = raw.split("[MEMORY:", 1)[1].split("]", 1)[0]
+                reply = raw.split("]", 1)[1].strip()
+                save_message(user_id, 'assistant', f"[видела фото: {mem}]")
+            else:
+                reply = raw
+            
+            await event.respond(make_typos(reply.lower()))
+        except Exception as e:
+            logger.error(f"Vision error: {e}")
+            await event.respond("блин не грузит картинку(")
+        
+        if os.path.exists(photo_path): os.remove(photo_path)
         return
 
-    # Онлайн статус
-    if is_online: await asyncio.sleep(random.randint(1, 4))
+    # === TEXT BATCHING (DEBOUNCE) ===
+    # Если пришло сообщение, мы не отвечаем сразу. Мы ждем 3-5 сек.
+    # Если придет еще одно — таймер сбросится. Так мы читаем "очередь".
+    
+    if user_id in message_buffers:
+        # Отменяем старый таймер, добавляем текст
+        message_buffers[user_id]['timer'].cancel()
+        message_buffers[user_id]['messages'].append(text)
     else:
-        await asyncio.sleep(random.randint(10, 30))
-        try: 
-            await client(functions.account.UpdateStatusRequest(offline=False))
-            is_online = True
-        except: pass
-
-    # Реакции
-    if user_id == BOYFRIEND_ID:
-        await maybe_react_to_message(event, text)
-        try: await client.send_read_acknowledge(event.chat_id, max_id=event.id)
-        except: pass
-
-    # Ответ (текст)
-    reply = await get_ai_response(text, user_id)
+        # Создаем новый буфер
+        message_buffers[user_id] = {'messages': [text]}
     
-    # Отправка
-    messages_to_send = [reply]
-    if len(reply) > 30 and random.random() < 0.3:
-        parts = reply.split(' ', 1)
-        if len(parts) > 1: messages_to_send = parts
-
-    last_msg_id = None
-    for msg in messages_to_send:
-        msg = make_typos(msg)
-        typing_sec = max(1.5, min(len(msg) / 4, 7))
-        async with client.action(event.chat_id, 'typing'):
-            await asyncio.sleep(typing_sec)
-        sent = await event.respond(msg)
-        last_msg_id = sent.id
-        await asyncio.sleep(random.uniform(0.5, 1.5))
+    # Прочитаем сообщения "визуально" в телеге
+    await client.send_read_acknowledge(event.chat_id, max_id=event.id)
     
-    if last_msg_id and user_id == BOYFRIEND_ID:
-        asyncio.create_task(maybe_react_to_own_message(event.chat_id, last_msg_id, reply))
+    # Запускаем таймер ожидания "конца мысли" пользователя
+    # Если парень пишет быстро, ждем меньше.
+    wait_time = 3.0 
+    
+    message_buffers[user_id]['timer'] = asyncio.create_task(
+        wait_and_process(user_id, wait_time)
+    )
 
-# --- ЗАПУСК ---
-async def health_check(request): return web.Response(text="Alive")
-app = web.Application()
-app.router.add_get('/', health_check)
+async def wait_and_process(user_id, delay):
+    try:
+        await asyncio.sleep(delay)
+        await process_user_buffer(user_id, client)
+    except asyncio.CancelledError:
+        pass # Таймер отменили, значит пришло новое сообщение
 
-async def main():
-    init_db()
+# --- ФОНОВЫЕ ЗАДАЧИ (ИНИЦИАТИВА) ---
+async def life_cycle_loop():
+    """Эмуляция жизни: онлайн, проверка сообщений, спонтанные сообщения"""
+    global is_online
+    logger.info("Цикл жизни запущен")
+    
+    while True:
+        try:
+            now = datetime.now(pytz.timezone('Europe/Kaliningrad'))
+            hour = now.hour
+            
+            # 1. Управление онлайном
+            if 8 <= hour < 23: # Днем бываем онлайн
+                if not is_online and random.random() < 0.3:
+                    await client(functions.account.UpdateStatusRequest(offline=False))
+                    is_online = True
+                    await asyncio.sleep(random.randint(60, 300)) # 1-5 минут онлайн
+                elif is_online:
+                    await client(functions.account.UpdateStatusRequest(offline=True))
+                    is_online = False
+            
+            # 2. Инициатива (написать первой)
+            # Проверяем, когда было последнее сообщение от меня и от него
+            rows = run_db_query(
+                "SELECT timestamp, role FROM messages WHERE user_id = %s ORDER BY id DESC LIMIT 1",
+                (BOYFRIEND_ID,), fetch=True
+            )
+            
+            should_write = False
+            prompt_context = ""
+            
+            if rows:
+                last_time, last_role = rows[0]
+                hours_since = (datetime.now() - last_time).total_seconds() / 3600
+                
+                # Если молчание > 5 часов днем и последнее сообщение было от НЕГО (и я забыла ответить) 
+                # ИЛИ от меня (и он молчит)
+                if hours_since > 5 and 10 <= hour <= 21:
+                    should_write = True
+                    if last_role == 'user':
+                        prompt_context = "Ты забыла ответить Лёше. Напиши ему, извинись мило."
+                    else:
+                        prompt_context = "Лёша молчит уже 5 часов. Напиши ему, спроси как дела, скажи что скучаешь."
+            
+            if should_write and random.random() < 0.4: # Не каждый раз
+                logger.info("Проявляю инициативу...")
+                resp = await call_groq_with_retry([
+                    {'role': 'system', 'content': SYSTEM_PROMPT_REAL_GF},
+                    {'role': 'user', 'content': f"TASK: {prompt_context} Пиши коротко."}
+                ])
+                text = make_typos(resp.lower().replace('.', ''))
+                await client.send_message(BOYFRIEND_ID, text)
+                save_message(BOYFRIEND_ID, 'assistant', text)
+            
+            await asyncio.sleep(random.randint(600, 1200)) # Проверка раз в 10-20 минут
+
+        except Exception as e:
+            logger.error(f"Ошибка в Life Cycle: {e}")
+            await asyncio.sleep(60)
+
+# --- ЗАПУСК И SHUTDOWN ---
+async def shutdown(signal, loop):
+    logger.info(f"Получен сигнал {signal.name}. Завершение работы...")
+    await client.disconnect()
+    if db_pool: db_pool.closeall()
+    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    [task.cancel() for task in tasks]
+    logger.info("Пока!")
+    loop.stop()
+
+def main():
+    # Восстановление сессии
+    session_b64 = os.getenv('SESSION_DATA')
+    if session_b64:
+        with open('girlfriend_session.session', 'wb') as f:
+            f.write(base64.b64decode(session_b64))
+
+    # WEB (Healthcheck для хостинга)
+    app = web.Application()
+    app.router.add_get('/', lambda r: web.Response(text="Sonya Alive"))
+    
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    # Init DB
+    init_db_pool()
+    
+    # Client Start
+    client.start(phone=PHONE)
+    
+    # Background Tasks
+    loop.create_task(life_cycle_loop())
+    
+    # Web runner
     runner = web.AppRunner(app)
-    await runner.setup()
-    await web.TCPSite(runner, '0.0.0.0', int(os.environ.get('PORT', 10000))).start()
-    await client.start(phone)
+    loop.run_until_complete(runner.setup())
+    site = web.TCPSite(runner, '0.0.0.0', int(os.environ.get('PORT', 10000)))
+    loop.run_until_complete(site.start())
+
+    # Graceful Shutdown Handlers
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, lambda s=sig: asyncio.create_task(shutdown(s, loop)))
+
+    logger.info("Соня v4.0 (Batching + Pooling + Gossip) запущена! 🚀")
     
-    asyncio.create_task(presence_manager())
-    asyncio.create_task(thoughts_loop())
-    asyncio.create_task(check_reactions_loop())
-    
-    print("Соня v3.0 (с глазами) запущена! 👀💕")
-    await client.run_until_disconnected()
+    try:
+        client.run_until_disconnected()
+    except Exception as e:
+        logger.critical(f"Client crashed: {e}")
+    finally:
+        loop.close()
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    main()
