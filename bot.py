@@ -364,11 +364,43 @@ async def handler(event):
             await event.respond("ладно, проехали")
             return
 
-    # НОВОЕ: Смягчённая школа (15% шанс вместо 40%, только если реально на уроке)
-    kld_now = datetime.now(pytz.timezone('Europe/Kaliningrad'))
-    if (9 <= kld_now.hour < 15) and kld_now.weekday() < 5 and user_id == BOYFRIEND_ID and random.random() < 0.15:
-        await asyncio.sleep(random.randint(5, 15))  # Короче задержка
-        await event.respond(random.choice(["на уроке щас", "потом", "не могу"]))
+    # НОВОЕ: Смягчённая школа с ИИ-генерацией + ghosting
+kld_now = datetime.now(pytz.timezone('Europe/Kaliningrad'))
+if (9 <= kld_now.hour < 15) and kld_now.weekday() < 5 and user_id == BOYFRIEND_ID and random.random() < 0.08:
+    # Прочитывает
+    try: 
+        await client.send_read_acknowledge(event.chat_id, max_id=event.id)
+    except: 
+        pass
+    
+    # 40% шанс вообще не ответить (прочитала и всё)
+    if random.random() < 0.4:
+        print("Прочитала но не ответила (на уроке)")
+        return
+    
+    # Генерит уникальную отмазку через ИИ
+    try:
+        busy_prompt = "напиши лёше что ты на уроке/паре и не можешь отвечать сейчас. очень коротко, 3-5 слов, без точки"
+        response = groq_client.chat.completions.create(
+            model="meta-llama/llama-4-maverick-17b-128e-instruct",
+            messages=[
+                {'role': 'system', 'content': SYSTEM_PROMPT_BOYFRIEND},
+                {'role': 'user', 'content': busy_prompt}
+            ],
+            temperature=1.2
+        )
+        busy_msg = response.choices[0].message.content.lower().replace('.', '').strip()
+        busy_msg = make_typos(busy_msg)
+        
+        await asyncio.sleep(random.randint(5, 15))
+        await event.respond(busy_msg)
+        print(f"Занята (школа): {busy_msg}")
+        return
+    except Exception as e:
+        print(f"Ошибка генерации busy: {e}")
+        # Фоллбэк если ИИ упал
+        await asyncio.sleep(random.randint(5, 15))
+        await event.respond(random.choice(["на уроке", "потом"]))
         return
 
     # Онлайн статус
