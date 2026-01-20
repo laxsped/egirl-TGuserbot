@@ -383,6 +383,9 @@ def main():
     asyncio.set_event_loop(loop)
     
     init_db_pool()
+
+    run_db_query("DELETE FROM messages;")
+    
     client.start(phone=PHONE)
     
     loop.create_task(life_cycle_loop())
