@@ -212,13 +212,27 @@ async def process_user_buffer(user_id):
     else:
         parts = [clean_text]
 
-    # Отправка
-    async with client.action(user_id, 'typing'):
-        for part in parts:
+    # --- ОТПРАВКА С ИМИТАЦИЕЙ ЧЕЛОВЕКА ---
+    # 1. Сначала пауза "на чтение" уведомления
+    await asyncio.sleep(random.uniform(1.5, 3.5))
+
+    for i, part in enumerate(parts):
+        # Включаем статус печати для каждого кусочка сообщения отдельно
+        async with client.action(user_id, 'typing'):
             part = make_typos(part)
-            await asyncio.sleep(len(part) * 0.05) 
+            
+            # 2. Время набора (примерно 0.18 сек на символ)
+            typing_time = len(part) * random.uniform(0.15, 0.22)
+            typing_time = min(typing_time, 10.0) # Чтобы не тупила дольше 10 сек
+            
+            await asyncio.sleep(typing_time)
+            
+            # 3. Сама отправка
             await client.send_message(user_id, part)
-            await asyncio.sleep(random.uniform(0.5, 1.2))
+            
+        # 4. Пауза между "пузырями" сообщений, если их несколько
+        if i < len(parts) - 1:
+            await asyncio.sleep(random.uniform(1.0, 2.5))
 
 async def wait_and_process(user_id, delay):
     try:
