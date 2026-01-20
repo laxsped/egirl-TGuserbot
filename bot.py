@@ -22,6 +22,7 @@ BOYFRIEND_ID = 5902478541
 GROQ_API_KEY = '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'
 DATABASE_URL = os.getenv('DATABASE_URL')
 groq_client = Groq(api_key=GROQ_API_KEY)
+
 # Восстановление сессии
 session_b64 = os.getenv('SESSION_DATA')
 if session_b64:
@@ -48,7 +49,6 @@ def init_db():
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
-        # Добавил индекс, чтобы история грузилась мгновенно
         cur.execute('''    
             CREATE TABLE IF NOT EXISTS messages (
                 id SERIAL PRIMARY KEY,
@@ -115,12 +115,11 @@ def make_typos(text):
         text_list.insert(idx, text_list[idx])
     return "".join(text_list)
 
-# --- VISION (Улучшенный промпт) ---
+# --- VISION ---
 def get_vision_response(image_path, user_id):
     with open(image_path, "rb") as image_file:
         base64_image = base64.b64encode(image_file.read()).decode('utf-8')
     
-    # Подтягиваем историю, чтобы она понимала, о чем вы говорили ДО фото
     history = get_history_from_db(user_id, limit=5)
     history_context = "\n".join([f"{m['role']}: {m['content']}" for m in history])
 
@@ -146,7 +145,7 @@ def get_vision_response(image_path, user_id):
                     ]
                 }
             ],
-            temperature=0.5 # Снижаем, чтобы меньше врала про туман
+            temperature=0.5
         )
         return completion.choices[0].message.content
     except Exception as e:
@@ -157,7 +156,6 @@ def get_vision_response(image_path, user_id):
 async def get_ai_response(message, user_id):
     is_boyfriend = (user_id == BOYFRIEND_ID)
     
-    # Твой стиль Сони
     SONYA_STYLE = (
         "Ты Соня, тебе 16. Твой стиль: ПОЛНЫЙ ИГНОР ЗАГЛАВНЫХ БУКВ И ТОЧЕК В КОНЦЕ. "
         "Пиши как реальная девчонка в телеге: коротко, сленгом, иногда с кучей лишних букв. "
@@ -171,7 +169,6 @@ async def get_ai_response(message, user_id):
     history = get_history_from_db(user_id, limit=40)
     
     try:
-        # Используем Maverick для обычного чата
         completion = groq_client.chat.completions.create(
             model="meta-llama/llama-4-maverick-17b-128e-instruct",
             messages=[{'role': 'system', 'content': system_prompt}] + history,
@@ -186,7 +183,7 @@ async def get_ai_response(message, user_id):
         print(f"Ошибка AI (Maverick Text): {e}")
         return "блин зависла чето"
 
-# --- BACKGROUND TASKS (Инициатива Сони) ---
+# --- BACKGROUND TASKS ---
 async def thoughts_loop():
     daily_messages_sent = 0
     last_reset_day = datetime.now().day
@@ -211,7 +208,6 @@ async def thoughts_loop():
         if random.random() > 0.2:
             continue
 
-        # Ревность (логика БД остается та же)
         is_jealous = False
         try:
             conn = psycopg2.connect(DATABASE_URL)
@@ -225,7 +221,6 @@ async def thoughts_loop():
                 if hours_since > 6: is_jealous = True
         except: pass
         
-        # Выбор промпта
         if is_jealous:
             prompts = ["напиши лёше что он куда-то пропал и ты беспокоишься", "спроси где он был, немного обиженно"]
         elif 8 <= hour < 11: prompts = ["напиши лёше доброе утро", "спроси как он спал"]
@@ -235,7 +230,6 @@ async def thoughts_loop():
         prompt = random.choice(prompts)
         
         try:
-            # Тут тоже Maverick!
             response = groq_client.chat.completions.create(
                 model="meta-llama/llama-4-maverick-17b-128e-instruct",
                 messages=[
@@ -247,7 +241,6 @@ async def thoughts_loop():
             text = response.choices[0].message.content
             text = make_typos(text.lower().replace('.', ''))
             
-            # Статус и отправка
             global is_online
             if not is_online:
                 await client(functions.account.UpdateStatusRequest(offline=False))
@@ -335,10 +328,8 @@ async def handler(event):
         photo_path = await event.download_media()
         
         async with client.action(event.chat_id, 'typing'):
-            # Вызываем зрение ОДИН раз
             raw_res = get_vision_response(photo_path, user_id)
             
-            # Чистим ответ от технических тегов
             if "[MEMORY:" in raw_res:
                 parts = raw_res.split("[MEMORY:", 1)
                 reply_to_user = parts[0].strip()
@@ -356,7 +347,6 @@ async def handler(event):
             await asyncio.sleep(random.randint(3, 6))
             await event.respond(final_text)
         return
-    # ==============================
 
     # Обида
     if user_id == BOYFRIEND_ID and check_if_offensive(text):
@@ -374,11 +364,11 @@ async def handler(event):
             await event.respond("ладно, проехали")
             return
 
-    # Школа
+    # НОВОЕ: Смягчённая школа (15% шанс вместо 40%, только если реально на уроке)
     kld_now = datetime.now(pytz.timezone('Europe/Kaliningrad'))
-    if (9 <= kld_now.hour < 15) and kld_now.weekday() < 5 and user_id == BOYFRIEND_ID and random.random() < 0.3:
-        await asyncio.sleep(random.randint(10, 30))
-        await event.respond(random.choice(["на уроке", "щас контрольная", "потом"]))
+    if (9 <= kld_now.hour < 15) and kld_now.weekday() < 5 and user_id == BOYFRIEND_ID and random.random() < 0.15:
+        await asyncio.sleep(random.randint(5, 15))  # Короче задержка
+        await event.respond(random.choice(["на уроке щас", "потом", "не могу"]))
         return
 
     # Онлайн статус
@@ -399,7 +389,7 @@ async def handler(event):
     # Ответ (текст)
     reply = await get_ai_response(text, user_id)
     
-    # Отправка (возможно частями)
+    # Отправка
     messages_to_send = [reply]
     if len(reply) > 30 and random.random() < 0.3:
         parts = reply.split(' ', 1)
@@ -439,4 +429,3 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
-
