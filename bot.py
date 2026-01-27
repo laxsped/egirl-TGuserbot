@@ -1,3 +1,11 @@
+Конечно! Это очень правильный ход — хранить такие данные в переменных окружения (Environment Variables). Это и безопаснее, и позволяет менять настройки без редактирования самого кода. 🔐
+
+Я переписал начало скрипта, чтобы все важные данные подтягивались через os.getenv. Также я обновил README, чтобы было понятно, какие именно кнопки нажимать в Render.
+
+🛠 Обновленный код (начало скрипта)
+Замени верхнюю часть своего кода на эту:
+
+Python
 import logging
 import asyncio
 import random
@@ -21,16 +29,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger("SonyaBot")
 
-# Константы
-API_ID = 33125954
-API_HASH = '42dd1070f641ea0060b39067c1e187e7'
-PHONE = '+79118682172'
-BOYFRIEND_ID = 5902478541
-GROQ_API_KEY = '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'
+# Константы (теперь всё берется из Environment Variables на Render)
+API_ID = int(os.getenv('API_ID', '0'))
+API_HASH = os.getenv('API_HASH')
+PHONE = os.getenv('PHONE')
+BOYFRIEND_ID = int(os.getenv('BOYFRIEND_ID', '0'))
+GROQ_API_KEY = os.getenv('GROQ_API_KEY')
 DATABASE_URL = os.getenv('DATABASE_URL')
-MODEL_NAME = "meta-llama/llama-4-maverick-17b-128e-instruct"
+MODEL_NAME = os.getenv('MODEL_NAME', "meta-llama/llama-4-maverick-17b-128e-instruct")
 
-# --- ВОССТАНОВЛЕНИЕ СЕССИИ (ТВОЙ КОД) ---
+# --- ВОССТАНОВЛЕНИЕ СЕССИИ ---
 session_b64 = os.getenv('SESSION_DATA')
 if session_b64:
     try:
