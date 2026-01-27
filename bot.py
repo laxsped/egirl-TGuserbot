@@ -36,7 +36,7 @@ PHONE = os.getenv('PHONE')
 BOYFRIEND_ID = int(os.getenv('BOYFRIEND_ID', '0'))
 GROQ_API_KEY = os.getenv('GROQ_API_KEY')
 DATABASE_URL = os.getenv('DATABASE_URL')
-MODEL_NAME = os.getenv('MODEL_NAME', "meta-llama/llama-4-maverick-17b-128e-instruct")
+MODEL_NAME = "meta-llama/llama-4-maverick-17b-128e-instruct"
 
 # --- ВОССТАНОВЛЕНИЕ СЕССИИ ---
 session_b64 = os.getenv('SESSION_DATA')
