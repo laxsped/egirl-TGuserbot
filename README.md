@@ -1,62 +1,54 @@
 🎀 Sonya UserBot v4.1
-Advanced Telegram UserBot that transforms an account into a "virtual girlfriend" named Sonya. She isn't just a chatbot; she's designed to feel like a real person with a distinct personality, human-like typing patterns, and visual recognition. 💅
+Advanced Telegram UserBot that transforms an account into a "virtual girlfriend" named Sonya. This bot isn't just a script; it's a digital personality with human-like behavior, emotions, and memory.
 
-✨ Features
-Personality-Driven: Sonya is ironic, lively, and a bit sassy. She speaks like a real 16-year-old (lowercase letters, slang, no "robotic" politeness).
+⚠️ Important: Choosing an Account
+You have two options for running this bot:
 
-Vision Capabilities: Can analyze photos and react to them emotionally thanks to the Llama-4 Maverick vision model. 📸
+Second Account (Recommended): Register a separate Telegram account for Sonya. This is the safest and most fun way to interact with her as a "separate person."
 
-Human Emulation: * Simulates "typing" status based on message length.
+Main Account: You can run the script on your primary account, but it will act on your behalf. Either way, the setup process is the same.
 
-Intentionally makes occasional typos.
-
-Breaks long thoughts into multiple "bubbles" for a realistic chat flow.
-
-Persistent Memory: Uses a PostgreSQL database to remember your conversation history.
-
-Proactive Engagement: If her "boyfriend" is silent for more than 5 hours, she might take the initiative and text him first.
-
-Stranger Defense: Cold and distant with strangers, but warms up if she detects friendly vibes or specific cues.
+☁️ No Local Installation Required!
+You don't need to download anything to your PC or install Python. The project includes a requirements.txt file, which means Render.com will automatically handle all libraries and dependencies in the cloud for you.
 
 🚀 Quick Setup Guide
-1. Repository Setup
-Fork this repository to your own GitHub profile.
+1. Preparation
+Fork this repository to your GitHub profile.
 
-Ensure all files (especially main.py and requirements.txt) are present.
+Get your API_ID and API_HASH from my.telegram.org.
 
-2. Code Configuration
-In main.py, update the following fields with your own data:
+Get your GROQ_API_KEY from Groq Cloud.
 
-BOYFRIEND_ID: Replace with your Telegram ID (get it from @userinfobot).
+Find your own Telegram ID using @userinfobot (this will be the BOYFRIEND_ID).
 
-GROQ_API_KEY: Enter your API key from Groq Cloud.
+2. Deploying to Render.com
+Create a Database: On Render, create a new PostgreSQL database. Copy the Internal Database URL.
 
-3. Database & Hosting (Render.com)
-Log in to Render.
+Create a Web Service: Create a new Web Service and connect it to your forked GitHub repo.
 
-Create a new PostgreSQL Database. Copy the Internal Database URL.
+Set Environment Variables: In the "Environment" tab of your service, add the following keys:
+Key,Value
+API_ID,Your Telegram API ID
+API_HASH,Your Telegram API Hash
+PHONE,Phone number of Sonya's account (with +)
+BOYFRIEND_ID,Your personal Telegram ID
+GROQ_API_KEY,Your Groq API Key
+DATABASE_URL,The URL from your Postgres database
+MODEL_NAME,meta-llama/llama-4-maverick-17b-128e-instruct
 
-Create a new Web Service, connect your GitHub fork, and use the following Environment Variables:
+3. First Launch
+Once you hit Deploy, Render will install everything automatically.
 
-DATABASE_URL: Your Postgres URL.
+Note: On the very first run, you might need to check the Render logs to enter the Telegram confirmation code if you haven't provided a SESSION_DATA string.
 
-SESSION_DATA: Your Telethon session string encoded in base64.
+✨ Why Sonya is special
+Human-like typing: She makes typos, uses slang, and breaks long texts into multiple messages.
 
-PORT: 10000.
+Smart Vision: Send her a photo, and she'll actually "see" and comment on it. 📸
 
-🛠 Tech Stack
-Language: Python 3.x 🐍
+Auto-Mode: She stays online during the day and can even text you first if she misses you.
 
-TG Framework: Telethon (Userbot API)
+Zero Maintenance: Since it's hosted on Render, she stays online 24/7 without your PC being on.
 
-LLM Engine: Groq API (Llama-3/4) 🧠
-
-Database: PostgreSQL
-
-Infrastructure: Render
-
-⚠️ Disclaimer
-This is a UserBot. Use it at your own risk. To avoid Telegram bans, do not use it for spamming and keep the human-like delays active.
-
-🤝 Support
-If Sonya starts getting too "real" or you find a bug, feel free to open an Issue! ✌️
+🤝 Need Help?
+If something isn't working or you have a cool idea for Sonya's personality, open an Issue! ✌️
