@@ -367,44 +367,61 @@ async def life_cycle_loop():
             await asyncio.sleep(60)
 
 # --- ЗАПУСК ---
-async def shutdown(signal, loop):
-    logger.info(f"Получен сигнал {signal.name}. Выключение...")
-    await client.disconnect()
-    if db_pool: db_pool.closeall()
+async def shutdown(sig, loop):
+    logger.info(f"Получен сигнал {sig.name}. Выключение...")
+    try:
+        await client.disconnect()
+        if db_pool: db_pool.closeall()
+    except:
+        pass
     tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
     [task.cancel() for task in tasks]
     loop.stop()
 
-def main():
-    # Web для хостинга
+async def start_bot():
+    # 1. Инициализация БД
+    init_db_pool()
+    
+    # 2. Очистка (УДАЛИ ЭТУ СТРОКУ ПОСЛЕ ПЕРВОГО УСПЕШНОГО ЗАПУСКА)
+    run_db_query("DELETE FROM messages;")
+    logger.info("База очищена")
+
+    # 3. Запуск Телеграма
+    await client.start(phone=PHONE)
+    
+    # 4. Запуск фоновых задач
+    asyncio.create_task(life_cycle_loop())
+
+    # 5. Запуск Веб-сервера для Render (Health Check)
     app = web.Application()
     app.router.add_get('/', lambda r: web.Response(text="Sonya Alive"))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get('PORT', 10000))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
     
+    logger.info(f"Health check запущен на порту {port}")
+    logger.info("Соня v4.2 (Fixed Event Loop) запущена! 🚀")
+
+    # 6. Бесконечное ожидание сообщений
+    await client.run_until_disconnected()
+
+def main():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    
-    init_db_pool()
 
-    run_db_query("DELETE FROM messages;")
-    
-    client.start(phone=PHONE)
-    
-    loop.create_task(life_cycle_loop())
-    
-    runner = web.AppRunner(app)
-    loop.run_until_complete(runner.setup())
-    site = web.TCPSite(runner, '0.0.0.0', int(os.environ.get('PORT', 10000)))
-    loop.run_until_complete(site.start())
-
+    # Настройка сигналов выключения для Render
     for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, lambda s=sig: asyncio.create_task(shutdown(s, loop)))
+        try:
+            loop.add_signal_handler(sig, lambda s=sig: asyncio.create_task(shutdown(s, loop)))
+        except NotImplementedError:
+            pass # Для Windows, если вдруг будешь тестить локально
 
-    logger.info("Соня v4.1 (Фикс сессии) запущена! 🚀")
-    
     try:
-        client.run_until_disconnected()
+        loop.run_until_complete(start_bot())
     except Exception as e:
-        logger.critical(f"Client crash: {e}")
+        logger.critical(f"Global crash: {e}")
     finally:
         loop.close()
 
