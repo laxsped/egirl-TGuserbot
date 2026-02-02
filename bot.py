@@ -383,8 +383,8 @@ async def start_bot():
     init_db_pool()
     
     # 2. Очистка (УДАЛИ ЭТУ СТРОКУ ПОСЛЕ ПЕРВОГО УСПЕШНОГО ЗАПУСКА)
-    run_db_query("DELETE FROM messages;")
-    logger.info("База очищена")
+    
+    
 
     # 3. Запуск Телеграма
     await client.start(phone=PHONE)
