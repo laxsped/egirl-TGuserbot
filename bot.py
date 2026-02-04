@@ -21,7 +21,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("SonyaBot")
 
-# Константы (теперь всё берется из Environment Variables на Render)
+# Константы
 API_ID = int(os.getenv('API_ID', '0'))
 API_HASH = os.getenv('API_HASH')
 PHONE = os.getenv('PHONE')
@@ -48,7 +48,8 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 # Глобальные переменные
 is_online = False
 db_pool = None
-message_buffers = {}  # Для батчинга сообщений
+message_buffers = {}
+shutdown_event = asyncio.Event()
 
 # --- ПУЛ СОЕДИНЕНИЙ С БД ---
 def init_db_pool():
@@ -78,7 +79,6 @@ def init_db_pool():
         db_pool.putconn(conn)
     except Exception as e:
         logger.critical(f"Не удалось подключиться к БД: {e}")
-        # Не выходим, чтобы веб-сервер мог запуститься, но работать будет криво
         
 def run_db_query(query, params=None, fetch=False):
     """Безопасное выполнение запросов через пул"""
@@ -172,7 +172,7 @@ SYSTEM_PROMPT_REAL_GF = """
 КОНТЕКСТ:
 - если видишь [GOSSIP: ...], можешь поинтересоваться этой темой, но не копируй сам тег.
 """
-# Промпт для тех, кто не Лёша
+
 SYSTEM_PROMPT_STRANGER = """
 Твое имя Соня, тебе 16. Тебе пишет какой-то левый чел (не твой парень). 
 ТВОЙ ВАЙБ: 
@@ -190,8 +190,8 @@ SYSTEM_PROMPT_STRANGER = """
 async def process_user_buffer(user_id):
     if user_id not in message_buffers: return
     
-    messages_text = " ".join(message_buffers[user_id]['messages'])
-    del message_buffers[user_id] # Очищаем буфер
+    buffer_data = message_buffers.pop(user_id)
+    messages_text = " ".join(buffer_data['messages'])
     
     logger.info(f"Обработка батча от {user_id}: {messages_text}")
     
@@ -206,14 +206,11 @@ async def process_user_buffer(user_id):
         gossip = get_recent_gossip(user_id)
         system_prompt += f"\n[SYSTEM UPDATE: Тебе сегодня писали другие: '{gossip}'. Если Лёша спросит — можешь рассказать.]"
     else:
-        # Для других людей берем историю, чтобы понять, бесят они нас или нет
-        stranger_history = history[-5:] # смотрим последние 5 сообщений
+        stranger_history = history[-5:]
         system_prompt = SYSTEM_PROMPT_STRANGER
         
-        # Если это первый раз, когда кто-то пишет
         if len(history) < 2:
             system_prompt += "\n[CONTEXT: Это твое первое сообщение этому человеку. Будь максимально подозрительной.]"
-        # Если переписка затянулась, а ты всё еще отвечаешь
         elif len(history) > 10:
              system_prompt += "\n[CONTEXT: Этот чел слишком много пишет. Начни отвечать еще короче или затролль его, что он душный.]"
 
@@ -230,7 +227,7 @@ async def process_user_buffer(user_id):
     
     save_message(user_id, 'assistant', clean_text)
     
-    # Разбиение на части (эффект строчения)
+    # Разбиение на части
     parts = []
     if len(clean_text) > 40 and random.random() < 0.7:
         for sep in [', но ', ', а ', ' и ', '? ']:
@@ -243,24 +240,18 @@ async def process_user_buffer(user_id):
         parts = [clean_text]
 
     # --- ОТПРАВКА С ИМИТАЦИЕЙ ЧЕЛОВЕКА ---
-    # 1. Сначала пауза "на чтение" уведомления
     await asyncio.sleep(random.uniform(1.5, 3.5))
 
     for i, part in enumerate(parts):
-        # Включаем статус печати для каждого кусочка сообщения отдельно
         async with client.action(user_id, 'typing'):
             part = make_typos(part)
             
-            # 2. Время набора (примерно 0.18 сек на символ)
             typing_time = len(part) * random.uniform(0.15, 0.22)
-            typing_time = min(typing_time, 10.0) # Чтобы не тупила дольше 10 сек
+            typing_time = min(typing_time, 10.0)
             
             await asyncio.sleep(typing_time)
-            
-            # 3. Сама отправка
             await client.send_message(user_id, part)
             
-        # 4. Пауза между "пузырями" сообщений, если их несколько
         if i < len(parts) - 1:
             await asyncio.sleep(random.uniform(1.0, 2.5))
 
@@ -269,7 +260,9 @@ async def wait_and_process(user_id, delay):
         await asyncio.sleep(delay)
         await process_user_buffer(user_id)
     except asyncio.CancelledError:
-        pass
+        logger.debug(f"Timer для {user_id} отменён")
+    except Exception as e:
+        logger.error(f"Ошибка в wait_and_process: {e}")
 
 # --- ГЛАВНЫЙ ХЕНДЛЕР ---
 @client.on(events.NewMessage(incoming=True))
@@ -285,10 +278,10 @@ async def main_handler(event):
         photo_path = await event.download_media()
         history_context = "\n".join([f"{m['role']}: {m['content']}" for m in get_history(user_id, 5)])
         
-        with open(photo_path, "rb") as f:
-            b64_img = base64.b64encode(f.read()).decode('utf-8')
-            
         try:
+            with open(photo_path, "rb") as f:
+                b64_img = base64.b64encode(f.read()).decode('utf-8')
+                
             vis_resp = await asyncio.to_thread(
                 groq_client.chat.completions.create,
                 model=MODEL_NAME,
@@ -311,20 +304,22 @@ async def main_handler(event):
         except Exception as e:
             logger.error(f"Vision error: {e}")
             await event.respond("блин картинка не грузится(")
-        
-        if os.path.exists(photo_path): os.remove(photo_path)
+        finally:
+            if os.path.exists(photo_path): 
+                os.remove(photo_path)
         return
 
-    # === BATCHING (СБОР СООБЩЕНИЙ) ===
+    # === BATCHING ===
     if user_id in message_buffers:
-        message_buffers[user_id]['timer'].cancel()
+        old_timer = message_buffers[user_id].get('timer')
+        if old_timer and not old_timer.done():
+            old_timer.cancel()
         message_buffers[user_id]['messages'].append(text)
     else:
         message_buffers[user_id] = {'messages': [text]}
     
     await client.send_read_acknowledge(event.chat_id, max_id=event.id)
     
-    # Ждем 3 секунды перед ответом, чтобы собрать следующие сообщения
     message_buffers[user_id]['timer'] = asyncio.create_task(
         wait_and_process(user_id, 3.0)
     )
@@ -333,7 +328,7 @@ async def main_handler(event):
 async def life_cycle_loop():
     global is_online
     logger.info("Цикл жизни запущен")
-    while True:
+    while not shutdown_event.is_set():
         try:
             now = datetime.now(pytz.timezone('Europe/Kaliningrad'))
             hour = now.hour
@@ -362,37 +357,52 @@ async def life_cycle_loop():
                     save_message(BOYFRIEND_ID, 'assistant', text)
             
             await asyncio.sleep(random.randint(600, 1200))
+        except asyncio.CancelledError:
+            logger.info("Life cycle loop отменён")
+            break
         except Exception as e:
             logger.error(f"Error in lifecycle: {e}")
             await asyncio.sleep(60)
 
 # --- ЗАПУСК ---
-async def shutdown(sig, loop):
-    logger.info(f"Получен сигнал {sig.name}. Выключение...")
-    try:
+async def graceful_shutdown():
+    logger.info("Начало корректного завершения...")
+    shutdown_event.set()
+    
+    # Отменяем все активные таймеры
+    for user_id, data in list(message_buffers.items()):
+        timer = data.get('timer')
+        if timer and not timer.done():
+            timer.cancel()
+    
+    # Закрываем клиент
+    if client.is_connected():
         await client.disconnect()
-        if db_pool: db_pool.closeall()
-    except:
-        pass
+    
+    # Закрываем пул БД
+    if db_pool:
+        db_pool.closeall()
+    
+    # Отменяем все оставшиеся задачи
     tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-    [task.cancel() for task in tasks]
-    loop.stop()
+    for task in tasks:
+        task.cancel()
+    
+    await asyncio.gather(*tasks, return_exceptions=True)
+    logger.info("Завершение выполнено корректно")
 
 async def start_bot():
     # 1. Инициализация БД
     init_db_pool()
     
-    # 2. Очистка (УДАЛИ ЭТУ СТРОКУ ПОСЛЕ ПЕРВОГО УСПЕШНОГО ЗАПУСКА)
-    
-    
-
-    # 3. Запуск Телеграма
+    # 2. Запуск Телеграма
     await client.start(phone=PHONE)
+    logger.info("Telegram клиент подключен")
     
-    # 4. Запуск фоновых задач
-    asyncio.create_task(life_cycle_loop())
+    # 3. Запуск фоновых задач
+    lifecycle_task = asyncio.create_task(life_cycle_loop())
 
-    # 5. Запуск Веб-сервера для Render (Health Check)
+    # 4. Запуск Веб-сервера
     app = web.Application()
     app.router.add_get('/', lambda r: web.Response(text="Sonya Alive"))
     runner = web.AppRunner(app)
@@ -402,27 +412,40 @@ async def start_bot():
     await site.start()
     
     logger.info(f"Health check запущен на порту {port}")
-    logger.info("Соня v4.2 (Fixed Event Loop) запущена! 🚀")
+    logger.info("Соня v4.3 (Ultra Stable) запущена! 🚀")
 
-    # 6. Бесконечное ожидание сообщений
-    await client.run_until_disconnected()
+    # 5. Ждём сигнала завершения
+    try:
+        await client.run_until_disconnected()
+    finally:
+        await graceful_shutdown()
 
 def main():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-
-    # Настройка сигналов выключения для Render
+    
+    def signal_handler(sig):
+        logger.info(f"Получен сигнал {sig}")
+        asyncio.create_task(graceful_shutdown())
+    
+    # Настройка обработки сигналов
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
-            loop.add_signal_handler(sig, lambda s=sig: asyncio.create_task(shutdown(s, loop)))
+            loop.add_signal_handler(sig, lambda s=sig: signal_handler(s))
         except NotImplementedError:
-            pass # Для Windows, если вдруг будешь тестить локально
+            pass
 
     try:
         loop.run_until_complete(start_bot())
+    except KeyboardInterrupt:
+        logger.info("KeyboardInterrupt получен")
     except Exception as e:
-        logger.critical(f"Global crash: {e}")
+        logger.critical(f"Global crash: {e}", exc_info=True)
     finally:
+        try:
+            loop.run_until_complete(graceful_shutdown())
+        except:
+            pass
         loop.close()
 
 if __name__ == '__main__':
