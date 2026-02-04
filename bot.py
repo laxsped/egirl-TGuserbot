@@ -50,6 +50,7 @@ is_online = False
 db_pool = None
 message_buffers = {}
 shutdown_event = asyncio.Event()
+start_time = time.time()
 
 # --- ПУЛ СОЕДИНЕНИЙ С БД ---
 def init_db_pool():
@@ -325,6 +326,49 @@ async def main_handler(event):
     )
 
 # --- ФОНОВЫЕ ЗАДАЧИ ---
+async def telegram_reconnect_loop():
+    """Следит за соединением с Telegram и переподключается при обрыве"""
+    logger.info("Telegram reconnect watcher запущен")
+    await asyncio.sleep(30)  # Даём время на первичное подключение
+    
+    while not shutdown_event.is_set():
+        try:
+            if not client.is_connected():
+                logger.warning("⚠️ Потеряно соединение с Telegram! Переподключаюсь...")
+                try:
+                    await client.connect()
+                    logger.info("✅ Переподключение к Telegram успешно!")
+                except Exception as e:
+                    logger.error(f"❌ Ошибка переподключения: {e}")
+            
+            await asyncio.sleep(30)  # Проверяем каждые 30 секунд
+        except asyncio.CancelledError:
+            logger.info("Telegram reconnect watcher отменён")
+            break
+        except Exception as e:
+            logger.error(f"Ошибка в reconnect loop: {e}")
+            await asyncio.sleep(60)
+
+async def keep_alive_ping():
+    """Пингует сам себя каждые 10 минут, чтобы Render не усыплял"""
+    await asyncio.sleep(60)  # Даём боту запуститься
+    logger.info("Keep-alive ping запущен")
+    
+    while not shutdown_event.is_set():
+        try:
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                port = int(os.environ.get('PORT', 10000))
+                async with session.get(f'http://127.0.0.1:{port}/') as resp:
+                    logger.debug(f"Self-ping: {resp.status}")
+            await asyncio.sleep(600)  # Каждые 10 минут
+        except asyncio.CancelledError:
+            logger.info("Keep-alive ping отменён")
+            break
+        except Exception as e:
+            logger.error(f"Ошибка keep-alive ping: {e}")
+            await asyncio.sleep(60)
+
 async def life_cycle_loop():
     global is_online
     logger.info("Цикл жизни запущен")
@@ -365,7 +409,15 @@ async def life_cycle_loop():
             await asyncio.sleep(60)
 
 # --- ЗАПУСК ---
+_shutdown_called = False
+
 async def graceful_shutdown():
+    global _shutdown_called, db_pool
+    
+    if _shutdown_called:
+        return
+    _shutdown_called = True
+    
     logger.info("Начало корректного завершения...")
     shutdown_event.set()
     
@@ -376,12 +428,18 @@ async def graceful_shutdown():
             timer.cancel()
     
     # Закрываем клиент
-    if client.is_connected():
-        await client.disconnect()
+    try:
+        if client.is_connected():
+            await client.disconnect()
+    except Exception as e:
+        logger.error(f"Ошибка при закрытии клиента: {e}")
     
     # Закрываем пул БД
-    if db_pool:
-        db_pool.closeall()
+    try:
+        if db_pool and not db_pool.closed:
+            db_pool.closeall()
+    except Exception as e:
+        logger.error(f"Ошибка при закрытии БД: {e}")
     
     # Отменяем все оставшиеся задачи
     tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
@@ -395,16 +453,44 @@ async def start_bot():
     # 1. Инициализация БД
     init_db_pool()
     
-    # 2. Запуск Телеграма
-    await client.start(phone=PHONE)
-    logger.info("Telegram клиент подключен")
+    # 2. Запуск Телеграма с retry логикой
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            await client.start(phone=PHONE)
+            logger.info("Telegram клиент подключен")
+            break
+        except Exception as e:
+            logger.error(f"Ошибка подключения к Telegram (попытка {attempt+1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(5)
+            else:
+                raise
     
     # 3. Запуск фоновых задач
     lifecycle_task = asyncio.create_task(life_cycle_loop())
+    keepalive_task = asyncio.create_task(keep_alive_ping())
+    reconnect_task = asyncio.create_task(telegram_reconnect_loop())
 
     # 4. Запуск Веб-сервера
     app = web.Application()
+    
+    # Health check для Render
     app.router.add_get('/', lambda r: web.Response(text="Sonya Alive"))
+    
+    # Детальный статус для мониторинга
+    async def status_handler(request):
+        return web.json_response({
+            'status': 'alive',
+            'uptime_seconds': int(time.time() - start_time),
+            'is_online': is_online,
+            'telegram_connected': client.is_connected(),
+            'db_pool_closed': db_pool.closed if db_pool else True,
+            'active_buffers': len(message_buffers)
+        })
+    
+    app.router.add_get('/status', status_handler)
+    
     runner = web.AppRunner(app)
     await runner.setup()
     port = int(os.environ.get('PORT', 10000))
@@ -412,7 +498,7 @@ async def start_bot():
     await site.start()
     
     logger.info(f"Health check запущен на порту {port}")
-    logger.info("Соня v4.3 (Ultra Stable) запущена! 🚀")
+    logger.info("Соня v4.4 (Anti-Sleep Edition) запущена! 🚀")
 
     # 5. Ждём сигнала завершения
     try:
