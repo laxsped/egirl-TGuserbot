@@ -48,6 +48,7 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 # Глобальные переменные
 is_online = False
 db_pool = None
+memory_storage = {}  # Временное хранилище
 message_buffers = {}
 shutdown_event = asyncio.Event()
 start_time = time.time()
@@ -56,10 +57,31 @@ start_time = time.time()
 def init_db_pool():
     global db_pool
     try:
-        db_pool = psycopg2.pool.ThreadedConnectionPool(
-            minconn=1, maxconn=10, dsn=DATABASE_URL
-        )
-        logger.info("DB Connection Pool создан")
+        # Добавь retry логику
+        for attempt in range(3):
+            try:
+                db_pool = psycopg2.pool.ThreadedConnectionPool(
+                    minconn=1, maxconn=10, 
+                    dsn=DATABASE_URL,
+                    connect_timeout=10
+                )
+                logger.info("✅ DB Connection Pool создан")
+                
+                # Тестовый запрос
+                conn = db_pool.getconn()
+                cur = conn.cursor()
+                cur.execute('SELECT 1')
+                cur.close()
+                db_pool.putconn(conn)
+                
+                logger.info("✅ Тестовое подключение к БД успешно!")
+                break
+            except Exception as e:
+                logger.error(f"Попытка {attempt+1}/3 подключения к БД провалилась: {e}")
+                if attempt < 2:
+                    time.sleep(5)
+                else:
+                    raise
         
         # Инициализация таблицы
         conn = db_pool.getconn()
@@ -79,13 +101,18 @@ def init_db_pool():
         cur.close()
         db_pool.putconn(conn)
     except Exception as e:
-        logger.critical(f"Не удалось подключиться к БД: {e}")
+        logger.critical(f"❌ КРИТИЧЕСКАЯ ОШИБКА: БД недоступна: {e}")
+        logger.warning("⚠️ Работаю без БД (только in-memory)")
         
 def run_db_query(query, params=None, fetch=False):
     """Безопасное выполнение запросов через пул"""
     conn = None
     try:
-        if not db_pool: return [] if fetch else None
+        if not db_pool:
+            # FALLBACK на память если БД недоступна
+            logger.warning("БД недоступна, используем in-memory storage")
+            return handle_memory_fallback(query, params, fetch)
+            
         conn = db_pool.getconn()
         cur = conn.cursor()
         cur.execute(query, params)
@@ -98,10 +125,43 @@ def run_db_query(query, params=None, fetch=False):
         return result
     except Exception as e:
         logger.error(f"Ошибка БД: {e}")
-        if conn: conn.rollback()
-        return [] if fetch else None
+        # Если ошибка - тоже fallback
+        return handle_memory_fallback(query, params, fetch)
     finally:
-        if conn: db_pool.putconn(conn)
+        if conn: 
+            try:
+                db_pool.putconn(conn)
+            except:
+                pass
+
+def handle_memory_fallback(query, params, fetch):
+    """Эмуляция БД в памяти"""
+    global memory_storage
+    
+    if 'INSERT INTO messages' in query:
+        user_id, role, content = params
+        if user_id not in memory_storage:
+            memory_storage[user_id] = []
+        memory_storage[user_id].append({'role': role, 'content': content})
+        # Ограничиваем историю
+        if len(memory_storage[user_id]) > 100:
+            memory_storage[user_id] = memory_storage[user_id][-100:]
+        return None
+    
+    elif 'SELECT role, content FROM messages WHERE user_id' in query and fetch:
+        user_id = params[0]
+        limit = params[1] if len(params) > 1 else 30
+        
+        if user_id not in memory_storage:
+            return []
+        
+        history = memory_storage[user_id][-limit:]
+        return [(h['role'], h['content']) for h in history]
+    
+    elif fetch:
+        return []
+    
+    return None
 
 # --- БИЗНЕС-ЛОГИКА БД ---
 def save_message(user_id, role, content):
